@@ -7,10 +7,11 @@ pub enum SessionState {
 }
 
 pub struct SmtpSession {
-    state: SessionState,
+    pub state: SessionState,
 }
+
 impl SmtpSession {
-    fn new() -> Self {
+    pub fn new() -> Self {
         SmtpSession {
             state: SessionState::Greeting,
         }
