@@ -7,6 +7,8 @@ use tokio::{
 use tracing::{error, info};
 
 use crate::config::Config;
+use crate::protocol::commands::Command;
+use crate::protocol::handler;
 use crate::protocol::state::SmtpSession;
 
 pub struct TcpServer {
@@ -75,20 +77,21 @@ impl TcpServer {
                 return Ok(());
             }
 
-            let command = line.trim();
+            let command = Command::parse(line.trim());
 
             match command {
-                // TODO: Matchers for all commands
-                "QUIT" => {
-                    writer.write_all(b"221 Bye\r\n").await?;
-                    break;
+                Ok(command) => {
+                    let response = handler::handle_command(command, &mut session);
+                    writer
+                        .write_all(format!("{}\r\n", response).as_bytes())
+                        .await?;
                 }
-                _ => {
-                    writer.write_all(b"500 Unrecognized state\r\n").await?;
+                Err(e) => {
+                    writer
+                        .write_all(format!("500 {}\r\n", e).as_bytes())
+                        .await?;
                 }
             }
         }
-
-        Ok(())
     }
 }
