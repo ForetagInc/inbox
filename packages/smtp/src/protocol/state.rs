@@ -1,19 +1,19 @@
 pub enum SessionState {
-    Greeting,
-    Ready,
-    ReceivingMail,
-    ReceivingData,
-    Finished,
+	Greeting,
+	Ready,
+	ReceivingMail,
+	ReceivingData,
+	Finished,
 }
 
 pub struct SmtpSession {
-    pub state: SessionState,
+	pub state: SessionState,
 }
 
 impl SmtpSession {
-    pub fn new() -> Self {
-        SmtpSession {
-            state: SessionState::Greeting,
-        }
-    }
+	pub fn new() -> Self {
+		SmtpSession {
+			state: SessionState::Greeting,
+		}
+	}
 }

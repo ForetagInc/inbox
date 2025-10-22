@@ -13,10 +13,10 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let config = Config {
         server: ServerConfig {
-            bind_addr: "127.0.0.1".to_string(),
-            bind_port: 8080,
+            bind_addr: "0.0.0.0".to_string(),
+            bind_port: 25,
             hostname: "localhost".to_string(),
-            max_connections: 5,
+            max_connections: 10,
         },
     };
 
