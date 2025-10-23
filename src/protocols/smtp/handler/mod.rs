@@ -1,7 +1,7 @@
 use tracing::info;
 
-use crate::protocol::commands::Command;
-use crate::protocol::state::{SessionState, SmtpSession};
+use crate::protocols::smtp::commands::Command;
+use crate::protocols::smtp::state::{SessionState, SmtpSession};
 
 pub fn handle_command(command: Command, session: &mut SmtpSession) -> String {
 	match command {

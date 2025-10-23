@@ -5,6 +5,8 @@ version = '0.1.0'
 edition = '2024'
 
 [dependencies]
+async-graphql = { version = '7.0.17', features = ['chrono', 'graphiql'] }
+async-graphql-axum = '7.0.17'
 axum = { version = '0.8.6' }
 chrono = { version = '0.4.42' }
 clamav-client = { version = '2.2.0', features = ['tokio-stream'] }

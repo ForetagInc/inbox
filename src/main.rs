@@ -1,28 +1,31 @@
 use crate::{
-    config::{Config, ServerConfig},
-    server::server::TcpServer,
+	config::{Config, ServerConfig},
+	server::{submission::SubmissionServer, transfer::TransferServer}
 };
 
+pub mod api;
 pub mod config;
-pub mod protocol;
 pub mod protocols;
 pub mod server;
 
 #[tokio::main]
 pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt::init();
+	tracing_subscriber::fmt::init();
 
-    let config = Config {
-        server: ServerConfig {
-            bind_addr: "0.0.0.0".to_string(),
-            bind_port: 25,
-            hostname: "localhost".to_string(),
-            max_connections: 10,
-        },
-    };
+	let config = Config {
+		server: ServerConfig {
+			bind_addr: "0.0.0.0".to_string(),
+			max_connections: 10,
+		},
+	};
 
-    let server = TcpServer::from_config(config).await?;
-    server.run().await?;
+    // server::http::create_server().await?;
 
-    Ok(())
+	let transfer_server = TransferServer::from_config(&config).await;
+	let submission_server = SubmissionServer::from_config(&config).await;
+
+	transfer_server.run().await;
+	submission_server.run().await;
+
+	Ok(())
 }

@@ -1,20 +1,21 @@
 use tokio_stream::{self as stream, StreamExt};
 use dav_server::{
-	davpath::DavPath, fs::{DavDirEntry, DavFile, DavMetaData, FsFuture, FsResult, FsStream, GuardedFileSystem, OpenOptions, ReadDirMeta}, localfs::LocalFs
+	davpath::DavPath,
+	fs::{DavDirEntry, DavFile, DavMetaData, FsFuture, FsResult, FsStream, GuardedFileSystem, OpenOptions, ReadDirMeta},
+	localfs::LocalFs
 };
-
-use std::{fmt::Display, path::Path};
-use hyper::{body::Incoming, Request};
+use axum::extract::Request;
+use std::path::Path;
 
 #[derive(Clone)]
 pub struct Filter;
 
 impl Filter {
 	// @todo: Implement proper Auth flow
-	pub async fn from_request(request: &Request<Incoming>) -> Result<Self, Box<dyn Display>> {
+	pub async fn from_request(request: &Request) -> Result<Self, Box<String>> {
 		let _auth = request.headers()
 			.get("Authorization")
-			.ok_or(Box::new("Missing Authorization header") as Box<dyn Display>)?;
+			.ok_or(Box::new(String::from("Missing Authorization header")) as Box<String>)?;
 
 		Ok(Self)
 	}

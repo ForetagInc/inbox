@@ -7,9 +7,9 @@ use tokio::{
 use tracing::{error, info};
 
 use crate::config::Config;
-use crate::protocol::commands::Command;
-use crate::protocol::handler;
-use crate::protocol::state::SmtpSession;
+use crate::protocols::smtp::commands::Command;
+use crate::protocols::smtp::handler;
+use crate::protocols::smtp::state::SmtpSession;
 
 pub struct TcpServer {
     listener: TcpListener,
@@ -60,10 +60,10 @@ impl TcpServer {
 
 		let mut session = SmtpSession::new();
 
-		let greeting = format!("220 {} Inbox SMTP server\r\n", config.server.hostname);
+		let greeting = format!("220 {} Inbox SMTP server\r\n", config.server.bind_addr);
 		writer.write_all(greeting.as_bytes()).await?;
 
-		session.state = crate::protocol::state::SessionState::Ready;
+		session.state = crate::protocols::smtp::state::SessionState::Ready;
 
 		loop {
 			line.clear();
