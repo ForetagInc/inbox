@@ -1,3 +1,5 @@
+use tracing::info;
+
 use crate::protocol::commands::Command;
 use crate::protocol::state::{SessionState, SmtpSession};
 
@@ -13,6 +15,7 @@ pub fn handle_command(command: Command, session: &mut SmtpSession) -> String {
 		}
 		Command::Mail(from) => {
 			session.state = SessionState::ReceivingMail;
+			info!("Received MAIL FROM: {}", from);
 			format!("250 Ok")
 		}
 		Command::Rcpt(to) => {

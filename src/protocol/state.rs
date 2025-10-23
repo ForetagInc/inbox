@@ -1,8 +1,11 @@
 pub enum SessionState {
 	Greeting,
 	Ready,
+	/// Meta data for the Email
 	ReceivingMail,
+	/// Body & attachments for the Email
 	ReceivingData,
+	SendingMail,
 	Finished,
 }
 

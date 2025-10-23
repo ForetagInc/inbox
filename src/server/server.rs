@@ -60,7 +60,7 @@ impl TcpServer {
 
 		let mut session = SmtpSession::new();
 
-		let greeting = format!("220 {} ESMTP server\r\n", config.server.hostname);
+		let greeting = format!("220 {} Inbox SMTP server\r\n", config.server.hostname);
 		writer.write_all(greeting.as_bytes()).await?;
 
 		session.state = crate::protocol::state::SessionState::Ready;

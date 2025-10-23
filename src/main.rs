@@ -5,6 +5,7 @@ use crate::{
 
 pub mod config;
 pub mod protocol;
+pub mod protocols;
 pub mod server;
 
 #[tokio::main]
