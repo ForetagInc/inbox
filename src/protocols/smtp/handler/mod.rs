@@ -18,7 +18,7 @@ pub fn handle_command(command: Command, session: &mut SmtpSession) -> String {
 			info!("Received MAIL FROM: {}", from);
 			format!("250 Ok")
 		}
-		Command::Rcpt(to) => {
+		Command::Rcpt(_to) => {
 			format!("250 Ok")
 		}
 		Command::Data => {

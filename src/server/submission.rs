@@ -1,4 +1,4 @@
-use tokio::{io::{AsyncBufReadExt, AsyncWriteExt, BufReader}, net::{TcpListener, TcpStream}};
+use tokio::{io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader}, net::{TcpListener, TcpStream}};
 use tracing::{error, info};
 
 use crate::{config::Config, protocols::smtp::{commands::Command, handler, state::SmtpSession}};
@@ -21,18 +21,25 @@ impl<'a> SubmissionServer<'a> {
 		}
 	}
 
-	pub async fn run(self) {
-		info!("[SMTP - Submission] Server listening for requests");
+	pub async fn run(self) -> io::Result<()> {
+		tracing::info!("[SMTP - Submission] Server listening for requests");
 
 		loop {
-			let (socket, addr) = self.listener.accept().await.unwrap();
-			let config = self.config.clone();
-
-			tokio::spawn(async move {
-				if let Err(e) = Self::handle_connection(socket, &config).await {
-					error!("Error handling connection from {}: {}", addr, e)
+			match self.listener.accept().await {
+				Ok((socket, addr)) => {
+					let config = self.config.clone();
+					tokio::spawn(async move {
+						if let Err(e) = Self::handle_connection(socket, &config).await {
+						error!("Error handling connection from {}: {}", addr, e);
+					}
+				});
 				}
-			});
+				Err(e) => {
+					// Don't panic the loop on transient accept errors
+					error!("accept error: {e}");
+					continue;
+				}
+			}
 		}
 	}
 

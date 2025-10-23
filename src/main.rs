@@ -19,13 +19,12 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
 		},
 	};
 
-    // server::http::create_server().await?;
+    // let http_server = server::http::create_server().await;
 
-	let transfer_server = TransferServer::from_config(&config).await;
-	let submission_server = SubmissionServer::from_config(&config).await;
+	let transfer_server = TransferServer::from_config(&config).await.run();
+	let submission_server = SubmissionServer::from_config(&config).await.run();
 
-	transfer_server.run().await;
-	submission_server.run().await;
+	tokio::try_join!(transfer_server, submission_server)?;
 
 	Ok(())
 }
