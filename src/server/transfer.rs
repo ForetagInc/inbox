@@ -1,5 +1,8 @@
+use std::io::Error;
 use tokio::{io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader}, net::{TcpListener, TcpStream}};
 use tracing::{error, info};
+
+use mail_parser::MessageParser;
 
 use crate::{config::Config, protocols::smtp::{commands::Command, handler, state::SmtpSession}};
 
@@ -43,7 +46,7 @@ impl<'a> TransferServer<'a> {
 		}
 	}
 
-	async fn handle_connection(mut socket: TcpStream, config: &Config) -> Result<(), String> {
+	async fn handle_connection(mut socket: TcpStream, config: &Config) -> Result<(), Error> {
 		let (reader, mut writer) = socket.split();
 		let mut reader = BufReader::new(reader);
 		let mut line = String::new();
@@ -51,7 +54,7 @@ impl<'a> TransferServer<'a> {
 		let mut session = SmtpSession::new();
 
 		let greeting = format!("220 {} Inbox SMTP server\r\n", config.server.bind_addr);
-		writer.write_all(greeting.as_bytes()).await;
+		writer.write_all(greeting.as_bytes()).await?;
 
 		session.state = crate::protocols::smtp::state::SessionState::Ready;
 
@@ -72,12 +75,12 @@ impl<'a> TransferServer<'a> {
 					let response = handler::handle_command(command, &mut session);
 					writer
 						.write_all(format!("{}\r\n", response).as_bytes())
-						.await;
+						.await?;
 				}
 				Err(e) => {
 					writer
 						.write_all(format!("500 {}\r\n", e).as_bytes())
-						.await;
+						.await?;
 				}
 			}
 		}
