@@ -1,7 +1,8 @@
+use std::io::Error;
 use tokio::{io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader}, net::{TcpListener, TcpStream}};
 use tracing::{error, info};
 
-use crate::{config::Config, protocols::smtp::{commands::Command, handler, state::SmtpSession}};
+use crate::{config::Config, protocols::smtp::{commands::Command, handler, state::{SessionState, SmtpSession}}};
 
 pub struct SubmissionServer<'a> {
 	listener: TcpListener,
@@ -43,7 +44,7 @@ impl<'a> SubmissionServer<'a> {
 		}
 	}
 
-	async fn handle_connection(mut socket: TcpStream, config: &Config) -> Result<(), String> {
+	async fn handle_connection(mut socket: TcpStream, config: &Config) -> Result<(), Error> {
 		let (reader, mut writer) = socket.split();
 		let mut reader = BufReader::new(reader);
 		let mut line = String::new();
@@ -51,35 +52,34 @@ impl<'a> SubmissionServer<'a> {
 		let mut session = SmtpSession::new();
 
 		let greeting = format!("220 {} Inbox SMTP server\r\n", config.server.bind_addr);
-		writer.write_all(greeting.as_bytes()).await;
+		writer.write_all(greeting.as_bytes()).await?;
 
 		session.state = crate::protocols::smtp::state::SessionState::Ready;
 
 		loop {
 			line.clear();
-
-			let bytes_read = reader.read_line(&mut line).await.unwrap();
+			let bytes_read = reader.read_line(&mut line).await?;
 
 			if bytes_read == 0 {
-				// Connection closed by client
-				return Ok(());
+				break;
 			}
 
-			let command = Command::parse(line.trim());
-
-			match command {
+			let trimmed = line.trim_end_matches(['\r', '\n']);
+			match Command::parse(trimmed) {
 				Ok(command) => {
-					let response = handler::handle_command(command, &mut session);
-					writer
-						.write_all(format!("{}\r\n", response).as_bytes())
-						.await;
+					handler::handle_command(command, &mut session, &mut reader, &mut writer).await?;
+					if session.state == SessionState::Finished {
+						break;
+					}
 				}
 				Err(e) => {
 					writer
 						.write_all(format!("500 {}\r\n", e).as_bytes())
-						.await;
+						.await?;
 				}
 			}
 		}
+
+		Ok(())
 	}
 }

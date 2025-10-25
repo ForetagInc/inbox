@@ -11,6 +11,7 @@ axum = { version = '0.8.6' }
 chrono = { version = '0.4.42' }
 clamav-client = { version = '2.2.0', features = ['tokio-stream'] }
 dav-server = '0.8.0'
+dotenv = '0.15.0'
 email_address = '0.2.9'
 hyper = { version = '1.7.0', features = ['full'] }
 hyper-util = { version = '0.1.17', features = ['full'] }

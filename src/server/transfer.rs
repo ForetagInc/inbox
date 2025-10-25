@@ -2,9 +2,7 @@ use std::io::Error;
 use tokio::{io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader}, net::{TcpListener, TcpStream}};
 use tracing::{error, info};
 
-use mail_parser::MessageParser;
-
-use crate::{config::Config, protocols::smtp::{commands::Command, handler, state::SmtpSession}};
+use crate::{config::Config, protocols::smtp::{commands::Command, handler, state::{SessionState, SmtpSession}}};
 
 pub struct TransferServer<'a> {
 	listener: TcpListener,
@@ -60,22 +58,19 @@ impl<'a> TransferServer<'a> {
 
 		loop {
 			line.clear();
-
-			let bytes_read = reader.read_line(&mut line).await.unwrap();
+			let bytes_read = reader.read_line(&mut line).await?;
 
 			if bytes_read == 0 {
-				// Connection closed by client
-				return Ok(());
+				break;
 			}
 
-			let command = Command::parse(line.trim());
-
-			match command {
+			let trimmed = line.trim_end_matches(['\r', '\n']);
+			match Command::parse(trimmed) {
 				Ok(command) => {
-					let response = handler::handle_command(command, &mut session);
-					writer
-						.write_all(format!("{}\r\n", response).as_bytes())
-						.await?;
+					handler::handle_command(command, &mut session, &mut reader, &mut writer).await?;
+					if session.state == SessionState::Finished {
+						break;
+					}
 				}
 				Err(e) => {
 					writer
@@ -84,5 +79,7 @@ impl<'a> TransferServer<'a> {
 				}
 			}
 		}
+
+		Ok(())
 	}
 }

@@ -1,8 +1,13 @@
+extern crate dotenv;
+
+use dotenv::dotenv;
+
 use crate::{
 	config::{Config, ServerConfig},
 	server::{submission::SubmissionServer, transfer::TransferServer}
 };
 
+pub mod db;
 pub mod api;
 pub mod config;
 pub mod protocols;
@@ -10,7 +15,10 @@ pub mod server;
 
 #[tokio::main]
 pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
+	dotenv().ok();
 	tracing_subscriber::fmt::init();
+
+	db::init().await;
 
 	let config = Config {
 		server: ServerConfig {
