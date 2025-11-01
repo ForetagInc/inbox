@@ -2081,10 +2081,12 @@ dependencies = [
  "mail-builder",
  "mail-parser",
  "mail-send",
+ "psl",
  "rayon",
  "serde",
  "smtp-proto",
  "surrealdb",
+ "thiserror 2.0.17",
  "tokio",
  "tokio-stream",
  "tower 0.5.2",
@@ -3094,6 +3096,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "psl"
+version = "2.1.157"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2dccfdc08041021deeacc4b8ccc2441e0cce1cdc61e0f91e695514a363a00bd0"
+dependencies = [
+ "psl-types",
+]
+
+[[package]]
 name = "psl-types"
 version = "2.0.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3586,33 +3597,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4e27ee8bb91ca0adcf0ecb116293afa12d393f9c2b9b9cd54d33e8078fe19839"
 
 [[package]]
-name = "rquickjs"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5c5227859c4dfc83f428e58f9569bf439e628c8d139020e7faff437e6f5abaa0"
-dependencies = [
- "rquickjs-core",
-]
-
-[[package]]
-name = "rquickjs-core"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e82e0ca83028ad5b533b53b96c395bbaab905a5774de4aaf1004eeacafa3d85d"
-dependencies = [
- "rquickjs-sys",
-]
-
-[[package]]
-name = "rquickjs-sys"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7fed0097b0b4fbb2a87f6dd3b995a7c64ca56de30007eb7e867dfdfc78324ba5"
-dependencies = [
- "cc",
-]
-
-[[package]]
 name = "rstar"
 version = "0.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4050,9 +4034,9 @@ checksum = "d7beae5182595e9a8b683fa98c4317f956c9a2dec3b9716990d20023cc60c766"
 
 [[package]]
 name = "storekey"
-version = "0.8.1"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f66e6afe371dcd16739ae7f7ba020f7ca429ee650698e9a909ec728d6e08920e"
+checksum = "79f0a20b9cc597130e6b3ae22f2bc0892095c0def0361b4b86e64a609ef222ef"
 dependencies = [
  "storekey-derive",
  "uuid",
@@ -4060,9 +4044,9 @@ dependencies = [
 
 [[package]]
 name = "storekey-derive"
-version = "0.8.1"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e4d11b8e63d4d628a76a6435837d356287e5d999ebab0ab6e8e8c1173a3ff197"
+checksum = "4b17310dd353bab243079e8669927142cc4bde8e6b91bc966c65e347e78563a3"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4130,9 +4114,9 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "surrealdb"
-version = "3.0.0-alpha.11"
+version = "3.0.0-alpha.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "950d5fa9ddbe50b3ef80744150743aa3c7beda9e356c6e77e287b5ba78bdb975"
+checksum = "4e9b0f345b4ab4c001aa0ac2b72a6bd63c40c0220566b0cae784aaadd1549dfd"
 dependencies = [
  "arrayvec",
  "async-channel",
@@ -4173,9 +4157,9 @@ dependencies = [
 
 [[package]]
 name = "surrealdb-core"
-version = "3.0.0-alpha.11"
+version = "3.0.0-alpha.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3aafb477f60a0214441906ff930e5ee0d4f39ba6b16514dd381941fc62a89fad"
+checksum = "9c54dc015e16f91d596cbaeef65c2cf8a83ecef06fa2ca2959b5e187994cbb82"
 dependencies = [
  "addr",
  "ahash 0.8.12",
@@ -4264,9 +4248,9 @@ dependencies = [
 
 [[package]]
 name = "surrealdb-protocol"
-version = "0.5.1"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2be23d580dc3bca14ec3ed8e9f3d530d43c9841251ad22690736b66852c1ea18"
+checksum = "663f743d93821325a41f87fd400b773c7e6bb66359a5326cdff638d68d21a401"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4287,9 +4271,9 @@ dependencies = [
 
 [[package]]
 name = "surrealdb-types"
-version = "3.0.0-alpha.11"
+version = "3.0.0-alpha.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "14a00a6a68fa3c9aa19264084004899c452a33654de521d08325cd7ac84e09aa"
+checksum = "706f530088b1a0eb36ee1964114d7cf3752710ff42c194ce901fc669a6212c2b"
 dependencies = [
  "anyhow",
  "bytes",
@@ -4300,7 +4284,6 @@ dependencies = [
  "http",
  "nanoid",
  "regex",
- "rquickjs",
  "rstest",
  "rust_decimal",
  "serde",
@@ -4314,9 +4297,9 @@ dependencies = [
 
 [[package]]
 name = "surrealdb-types-derive"
-version = "3.0.0-alpha.11"
+version = "3.0.0-alpha.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2351ce9f3579eb76caef0f44ec7a04d069789629eaae96656907d95ece4cf5b2"
+checksum = "956ac3a9365b5f1e5277f38efd7efa068a93d6acf1ada5a7fb4a7a88cc53ec68"
 dependencies = [
  "proc-macro2",
  "quote",

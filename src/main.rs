@@ -4,7 +4,7 @@ use dotenv::dotenv;
 
 use crate::{
 	config::{Config, ServerConfig},
-	server::{submission::SubmissionServer, transfer::TransferServer}
+	server::{http::HTTPServer, submission::SubmissionServer, transfer::TransferServer}
 };
 
 pub mod db;
@@ -18,7 +18,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	dotenv().ok();
 	tracing_subscriber::fmt::init();
 
-	db::init().await;
+	// db::init().await;
 
 	let config = Config {
 		server: ServerConfig {
@@ -28,12 +28,12 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
 		},
 	};
 
-    // let http_server = server::http::create_server().await;
+    let http_server = HTTPServer::serve().await;
 
 	let transfer_server = TransferServer::from_config(&config).await.run();
 	let submission_server = SubmissionServer::from_config(&config).await.run();
 
-	tokio::try_join!(transfer_server, submission_server)?;
+	tokio::try_join!(http_server, transfer_server, submission_server)?;
 
 	Ok(())
 }
