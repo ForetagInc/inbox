@@ -51,7 +51,7 @@ impl<'a> TransferServer<'a> {
 
 		let mut session = SmtpSession::new();
 
-		let greeting = format!("220 {} Inbox SMTP server\r\n", config.server.bind_addr);
+		let greeting = format!("220 {} Inbox SMTP\r\n", config.server.hostname);
 		writer.write_all(greeting.as_bytes()).await?;
 
 		session.state = crate::protocols::smtp::state::SessionState::Ready;

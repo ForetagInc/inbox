@@ -22,6 +22,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 	let config = Config {
 		server: ServerConfig {
+			hostname: "mail.wrkshp.so".to_string(),
 			bind_addr: "0.0.0.0".to_string(),
 			max_connections: 10,
 		},
