@@ -4,7 +4,7 @@ use crate::protocols::smtp::error::IncomingError;
 
 pub async fn verify_mail(ip: &str, helo_domain: &str, host_domain: &str, sender: &str, message: &[u8]) -> Result<bool, IncomingError> {
 	let authenticator = MessageAuthenticator::new_cloudflare_tls().expect("Failed to create a Cloudflare TLS authenticator");
-	let message = AuthenticatedMessage::parse(&message).unwrap();
+	let message = AuthenticatedMessage::parse(&message).expect("Failed to parse the raw mail body");
 
 	let ip = match ip.parse() {
 		Ok(ip) => ip,
