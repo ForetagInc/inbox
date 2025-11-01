@@ -1,9 +1,12 @@
+pub mod incoming;
+
 use tracing::info;
 use std::io::Result;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt};
 use mail_parser::MessageParser;
 
 use crate::protocols::smtp::commands::Command;
+use crate::protocols::smtp::handler::incoming::verify_mail;
 use crate::protocols::smtp::state::{SessionState, SmtpSession};
 
 pub async fn handle_command<R, W>(
@@ -50,8 +53,11 @@ where
 				let subject = message.subject().unwrap_or_default();
 				// let from = message.from().map(|a| a.to_string()).unwrap_or_default();
 				// let to = message.to().map(|a| a.to_string()).unwrap_or_default();
+				let from = message.from().unwrap().as_list();
 
-				info!("Parsed mail Subject={}", subject);
+				info!("Parsed mail Subject={}, from={:?}", subject, from);
+
+				// let verify_mail = verify_mail(ip, helo_domain, host_domain, from, message.raw_message());
 
 				// 📨 TODO: Save to storage or queue
 				writer.write_all(b"250 2.0.0 OK: queued\r\n").await?;
