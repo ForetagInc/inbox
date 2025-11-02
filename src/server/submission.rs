@@ -1,4 +1,4 @@
-use std::io::Error;
+use std::{io::Error, net::{IpAddr, Ipv4Addr}};
 use tokio::{io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader}, net::{TcpListener, TcpStream}};
 use tracing::{error, info};
 
@@ -45,11 +45,12 @@ impl<'a> SubmissionServer<'a> {
 	}
 
 	async fn handle_connection(mut socket: TcpStream, config: &Config) -> Result<(), Error> {
+		let peer_ip = socket.peer_addr().ok().map(|addr| addr.ip()).unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
 		let (reader, mut writer) = socket.split();
 		let mut reader = BufReader::new(reader);
 		let mut line = String::new();
 
-		let mut session = SmtpSession::new();
+		let mut session = SmtpSession::new(peer_ip);
 
 		let greeting = format!("220 {} Inbox SMTP server\r\n", config.server.bind_addr);
 		writer.write_all(greeting.as_bytes()).await?;
@@ -67,7 +68,7 @@ impl<'a> SubmissionServer<'a> {
 			let trimmed = line.trim_end_matches(['\r', '\n']);
 			match Command::parse(trimmed) {
 				Ok(command) => {
-					handler::handle_command(command, &mut session, &mut reader, &mut writer).await?;
+					handler::handle_command(command, &mut session, config, &mut reader, &mut writer).await?;
 					if session.state == SessionState::Finished {
 						break;
 					}

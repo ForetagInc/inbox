@@ -6,6 +6,7 @@ use std::io::Result;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt};
 use mail_parser::MessageParser;
 
+use crate::config::Config;
 use crate::protocols::smtp::commands::Command;
 use crate::protocols::smtp::handler::incoming::verify_mail;
 use crate::protocols::smtp::state::{SessionState, SmtpSession};
@@ -17,6 +18,7 @@ async fn reply<W: AsyncWrite + Unpin>(w: &mut W, code: u16, msg: &str) -> Result
 pub async fn handle_command<R, W>(
 	command: Command,
 	session: &mut SmtpSession,
+	config: &Config,
 	reader: &mut R,
 	writer: &mut W,
 ) -> Result<()>
@@ -27,6 +29,7 @@ where
 	match command {
 		Command::Helo(domain) | Command::Ehlo(domain) => {
 			session.state = SessionState::Ready;
+			session.helo_domain = Some(domain.clone());
 			reply(writer, 250, &domain).await?;
 		}
 
@@ -79,29 +82,19 @@ where
 					info!("DATA BYTES: {:?}", message);
 
 					let subject = message.subject().unwrap_or_default();
-					let from = message.from().map(|addrs| {
-						addrs
-        					.iter()
-        					.map(|a| {
-             					let email = a.address().unwrap_or_default();
-             					match a.name().filter(|n| !n.is_empty()) {
-                 					Some(name) => format!("{} <{}>", name, email),
-                 					None => email.to_string(),
-                 				}
-             				})
-        					.collect::<Vec<_>>()
-             				.join(", ")
-					})
-					.unwrap_or_default();
 
 					let mut txn = session.transaction.take().unwrap();
 					txn.data = Some(raw.clone());
 
-					// let to = message.to().map(|a| a.to_string()).unwrap_or_default();
+					let peer_ip = session.peer_ip.unwrap();
+					let helo_domain = session.helo_domain.as_ref().unwrap().as_str();
+					let mail_from = txn.mail_from.as_ref().unwrap().as_str();
+					let raw_message = message.raw_message();
 
-					info!("Parsed mail Subject={}, from={:?}", &subject, from);
+					let verify_mail = verify_mail(peer_ip, helo_domain, &config.server.hostname, mail_from, raw_message).await;
 
-					// let verify_mail = verify_mail(ip, helo_domain, host_domain, from, message.raw_message());
+					info!("Verifying: {}, {}, {}, {}", peer_ip, helo_domain, mail_from, &config.server.hostname);
+					info!("Verify Email {:?}", verify_mail);
 
 					// 📨 TODO: Save to storage or queue
 					reply(writer, 250, "2.0.0 OK: queued").await?;
