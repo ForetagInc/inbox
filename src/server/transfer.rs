@@ -26,21 +26,21 @@ impl<'a> TransferServer<'a> {
 		tracing::info!("[SMTP - Transfer] Server listening for requests");
 
 		loop {
-			match self.listener.accept().await {
-				Ok((socket, addr)) => {
-					let config = self.config.clone();
-					tokio::spawn(async move {
-						if let Err(e) = Self::handle_connection(socket, &config).await {
-						error!("Error handling connection from {}: {}", addr, e);
-					}
-				});
-				}
-				Err(e) => {
-					// Don't panic the loop on transient accept errors
-					error!("accept error: {e}");
+			let (socket, addr) = match self.listener.accept().await {
+				Ok(v) => v,
+				Err(err) => {
+					error!("Accept error: {err}");
 					continue;
 				}
-			}
+			};
+
+			let cfg = self.config.clone();
+
+			tokio::spawn(async move {
+				if let Err(err) = Self::handle_connection(socket, &cfg).await {
+					error!("Error handling connection from {}: {}", addr, err);
+				}
+			});
 		}
 	}
 
@@ -54,7 +54,7 @@ impl<'a> TransferServer<'a> {
 		let greeting = format!("220 {} Inbox SMTP\r\n", config.server.hostname);
 		writer.write_all(greeting.as_bytes()).await?;
 
-		session.state = crate::protocols::smtp::state::SessionState::Ready;
+		session.state = SessionState::Ready;
 
 		loop {
 			line.clear();
