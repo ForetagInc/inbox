@@ -52,35 +52,67 @@ where
 		}
 
 		Command::Data => {
+			let Some(txn) = session.transaction.as_ref() else {
+				reply(writer, 305, "5.5.1 Bad sequence of commands").await?;
+				return Ok(());
+			};
+
+			if txn.mail_from.is_none() {
+				reply(writer, 503, "5.5.1 Need MAIL FROM first").await?;
+                return Ok(());
+			}
+
+			if txn.rcpt_to.is_empty() {
+				reply(writer, 554, "5.5.1 No valid recipients").await?;
+                return Ok(());
+			}
+
 			session.state = SessionState::ReceivingData;
-			writer
-				.write_all(b"354 End data with <CR><LF>.<CR><LF>\r\n")
-				.await?;
+
+			reply(writer, 354, "End data with <CR><LF>.<CR><LF>").await?;
 
 			let raw = read_message_data(reader).await?;
 			let parser = MessageParser::default();
 
-			info!("DATA FOUND: {:?}", parser.parse(&raw));
+			match parser.parse(&raw) {
+				Some(message) => {
+					info!("DATA BYTES: {:?}", message);
 
-			if let Some(message) = parser.parse(&raw) {
-				let subject = message.subject().unwrap_or_default();
-				// let from = message.from().map(|a| a.to_string()).unwrap_or_default();
-				// let to = message.to().map(|a| a.to_string()).unwrap_or_default();
-				let from = message.from().unwrap().as_list();
+					let subject = message.subject().unwrap_or_default();
+					let from = message.from().map(|addrs| {
+						addrs
+        					.iter()
+        					.map(|a| {
+             					let email = a.address().unwrap_or_default();
+             					match a.name().filter(|n| !n.is_empty()) {
+                 					Some(name) => format!("{} <{}>", name, email),
+                 					None => email.to_string(),
+                 				}
+             				})
+        					.collect::<Vec<_>>()
+             				.join(", ")
+					})
+					.unwrap_or_default();
 
-				info!("Parsed mail Subject={}, from={:?}", subject, from);
+					let mut txn = session.transaction.take().unwrap();
+					txn.data = Some(raw.clone());
 
-				// let verify_mail = verify_mail(ip, helo_domain, host_domain, from, message.raw_message());
+					// let to = message.to().map(|a| a.to_string()).unwrap_or_default();
 
-				// 📨 TODO: Save to storage or queue
-				writer.write_all(b"250 2.0.0 OK: queued\r\n").await?;
-			} else {
-				writer
-					.write_all(b"550 5.6.0 Message parse failure\r\n")
-					.await?;
+					info!("Parsed mail Subject={}, from={:?}", &subject, from);
+
+					// let verify_mail = verify_mail(ip, helo_domain, host_domain, from, message.raw_message());
+
+					// 📨 TODO: Save to storage or queue
+					reply(writer, 250, "2.0.0 OK: queued").await?;
+				}
+				None => {
+					reply(writer, 550, "5.6.0 Message parse failure").await?;
+				}
 			}
 
 			session.state = SessionState::Ready;
+			session.reset_txn();
 		}
 
 		Command::Quit => {
