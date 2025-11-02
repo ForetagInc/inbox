@@ -84,16 +84,3 @@ fn parse_path_arg(rest: &str, expect_prefix: &str) -> Result<String, ()> {
 	let path = &s[1..close];
 	Ok(path.to_string())
 }
-
-
-
-fn take_token(s: &str) -> Option<(&str, &str)> {
-	// token is up to first whitespace
-	let s = s.trim_start();
-	let idx = s.find(char::is_whitespace).unwrap_or(s.len());
-	Some((&s[..idx], &s[idx..]))
-}
-
-fn eq_ci(a: &str, b: &str) -> bool {
-	a.eq_ignore_ascii_case(b)
-}
