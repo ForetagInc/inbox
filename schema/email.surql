@@ -1,9 +1,14 @@
 DEFINE TABLE OVERWRITE email SCHEMAFULL;
 
--- Headers (RFC 5322)
+-- Identity
 DEFINE FIELD OVERWRITE message_id ON email
 	TYPE string;
 
+DEFINE FIELD OVERWRITE content_hash ON email
+	TYPE string
+	COMMENT 'SHA256 hash of the email content';
+
+-- Headers (RFC 5322)
 DEFINE FIELD OVERWRITE date ON email
 	TYPE option<datetime>;
 
@@ -14,6 +19,9 @@ DEFINE FIELD OVERWRITE subject_normalized ON email
 	TYPE string;
 
 -- Addresses (RFC 5322) - Store rendered Mailboxes
+DEFINE FIELD OVERWRITE references ON email
+	TYPE array<string>
+	DEFAULT [];
 
 DEFINE FIELD OVERWRITE from ON email
 	TYPE array<record<email_address>>;
@@ -72,6 +80,9 @@ DEFINE FIELD OVERWRITE blob_path ON email
 
 DEFINE FIELD OVERWRITE blob_sha ON email
 	TYPE string;
+
+DEFINE FIELD OVERWRITE envelope_enc ON email
+	TYPE option<bytes>;
 
 -- Lifecycle
 DEFINE FIELD OVERWRITE kind ON email

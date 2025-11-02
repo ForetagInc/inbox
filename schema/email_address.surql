@@ -1,7 +1,7 @@
 DEFINE TABLE OVERWRITE email_address SCHEMAFULL;
 
-DEFINE FIELD OVERWRITE folders ON email_address
-	COMPUTED <~mailbox_folder;
+DEFINE FIELD OVERWRITE mailboxes ON email_address
+	COMPUTED <~mailbox;
 
 DEFINE FIELD OVERWRITE aliases ON email_address
 	COMPUTED <~email_address;

@@ -1,7 +1,7 @@
 DEFINE TABLE OVERWRITE mailbox SCHEMAFULL;
 
-DEFINE FIELD OVERWRITE account ON mailbox
-	TYPE record<account>;
+DEFINE FIELD OVERWRITE email_address ON mailbox
+	TYPE record<email_address>;
 
 DEFINE FIELD OVERWRITE name ON mailbox
 	TYPE string;
@@ -27,6 +27,6 @@ DEFINE FIELD OVERWRITE modseq ON mailbox
 --- Indexes
 ---
 
-DEFINE INDEX OVERWRITE mailbox_for_account ON mailbox
-	FIELDS account, name
+DEFINE INDEX OVERWRITE mailbox_email_address ON mailbox
+	FIELDS email_address, name
 	UNIQUE;
