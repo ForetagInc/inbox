@@ -10,6 +10,10 @@ use crate::protocols::smtp::commands::Command;
 use crate::protocols::smtp::handler::incoming::verify_mail;
 use crate::protocols::smtp::state::{SessionState, SmtpSession};
 
+async fn reply<W: AsyncWrite + Unpin>(w: &mut W, code: u16, msg: &str) -> Result<()> {
+	w.write_all(format!("{code} {msg}\r\n").as_bytes()).await
+}
+
 pub async fn handle_command<R, W>(
 	command: Command,
 	session: &mut SmtpSession,
@@ -23,20 +27,28 @@ where
 	match command {
 		Command::Helo(domain) | Command::Ehlo(domain) => {
 			session.state = SessionState::Ready;
-			writer
-				.write_all(format!("250 {}\r\n", domain).as_bytes())
-				.await?;
+			reply(writer, 250, &domain).await?;
 		}
 
 		Command::Mail(from) => {
 			session.state = SessionState::ReceivingMail;
+			session.reset_txn();
+			let txn = session.transaction.as_mut().expect("Transaction Exists");
+			txn.mail_from = Some(from.clone());
 			info!("MAIL FROM: {}", from);
-			writer.write_all(b"250 Ok\r\n").await?;
+			reply(writer, 250, "Ok").await?;
 		}
 
 		Command::Rcpt(to) => {
+			if !matches!(session.state, SessionState::ReceivingMail | SessionState::ReceivingRcpt) {
+                reply(writer, 503, "5.5.1 Bad sequence of commands").await?;
+                return Ok(());
+            }
+            session.state = SessionState::ReceivingRcpt;
+            let txn = session.transaction.as_mut().expect("Transaction Exists");
+            txn.rcpt_to.push(to.clone());
 			info!("RCPT TO: {}", to);
-			writer.write_all(b"250 Ok\r\n").await?;
+			reply(writer, 250, "OK").await?;
 		}
 
 		Command::Data => {
@@ -73,16 +85,17 @@ where
 
 		Command::Quit => {
 			session.state = SessionState::Finished;
-			writer.write_all(b"221 Bye\r\n").await?;
+			reply(writer, 221, "Bye").await?;
 		}
 
 		Command::Rset => {
 			session.state = SessionState::Ready;
-			writer.write_all(b"250 Ok\r\n").await?;
+			session.reset_txn();
+			reply(writer, 250, "OK").await?;
 		}
 
 		Command::Noop => {
-			writer.write_all(b"250 Ok\r\n").await?;
+			reply(writer, 250, "OK").await?;
 		}
 	}
 
