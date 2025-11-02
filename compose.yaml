@@ -1,0 +1,13 @@
+services:
+  inbox:
+    build: .
+    ports:
+      - '25:25'
+      - '587:587'
+      - '3000:3000'
+  clamav:
+    image: clamav/clamav
+    platform: linux/amd64
+    ports:
+      - '3310:3310'
+      - '7357:7357'
