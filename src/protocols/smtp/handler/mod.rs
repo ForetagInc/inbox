@@ -1,3 +1,4 @@
+pub mod attachment;
 pub mod incoming;
 
 use tracing::info;

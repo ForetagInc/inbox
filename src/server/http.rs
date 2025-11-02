@@ -1,8 +1,8 @@
-use axum::{Extension, Router, routing::{any, get}};
-use tokio::{io, net::TcpListener};
 use async_graphql_axum::GraphQL;
-use tracing::info;
+use axum::{Extension, Router, routing::{any, get}};
 use std::{future::Future, io::Error};
+use tokio::net::TcpListener;
+use tracing::info;
 
 use crate::api::{schema, graphiql};
 use crate::protocols::dav::{instance, dav_handler};
@@ -18,7 +18,7 @@ impl HTTPServer {
 				// .route("/dav", any(dav_handler))
 				// .route("/dav/", any(dav_handler))
 				// .route("/dav/{*path}", any(dav_handler))
-				// .layer(Extension(instance))
+				.layer(Extension(instance))
 				.route("/graphql", get(graphiql).post_service(GraphQL::new(schema())));
 
 			let listener = TcpListener::bind("0.0.0.0:3000").await?;

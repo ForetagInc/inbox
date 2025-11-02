@@ -1,3 +1,5 @@
+pub mod r2;
+
 use serde::Deserialize;
 
 #[derive(Deserialize, Clone, Debug)]

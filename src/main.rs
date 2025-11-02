@@ -7,9 +7,10 @@ use crate::{
 	server::{http::HTTPServer, submission::SubmissionServer, transfer::TransferServer}
 };
 
-pub mod db;
 pub mod api;
 pub mod config;
+pub mod db;
+pub mod integrations;
 pub mod protocols;
 pub mod server;
 
