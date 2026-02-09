@@ -2,9 +2,10 @@ extern crate dotenv;
 
 use dotenv::dotenv;
 use inbox::{
-	db,
 	config::Config,
-	server::{http::HTTPServer, submission::SubmissionServer, transfer::TransferServer}
+	db,
+	protocols::smtp::queue,
+	server::{http::HTTPServer, submission::SubmissionServer, transfer::TransferServer},
 };
 use tracing::warn;
 
@@ -18,6 +19,11 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	}
 
 	let config = Config::from_env();
+	if config.smtp.outbound_queue.enabled && db::is_ready() {
+		tokio::spawn(queue::run_worker(config.clone()));
+	} else if config.smtp.outbound_queue.enabled {
+		warn!("Outbound queue is enabled but DB is unavailable; queued delivery is disabled.");
+	}
 
 	let http_server = HTTPServer::serve(config.clone()).await;
 

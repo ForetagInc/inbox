@@ -21,6 +21,16 @@ DEFINE FIELD OVERWRITE require_dkim_pass ON has_domain
 DEFINE FIELD OVERWRITE require_dmarc_pass ON has_domain
 	TYPE option<bool>;
 
+DEFINE FIELD OVERWRITE enc_mode ON has_domain
+	TYPE option<string>
+	ASSERT $value = NONE OR $value IN ['standard', 'e2ee'];
+
+DEFINE FIELD OVERWRITE enc_sse_c_key_b64 ON has_domain
+	TYPE option<string>;
+
+DEFINE FIELD OVERWRITE enc_wrapped_dek_customer ON has_domain
+	TYPE option<string>;
+
 DEFINE FIELD OVERWRITE is_active ON has_domain
 	TYPE bool
 	DEFAULT true;

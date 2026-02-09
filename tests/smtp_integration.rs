@@ -3,23 +3,24 @@ use std::{
 	net::{IpAddr, Ipv4Addr},
 	path::Path,
 	pin::Pin,
-	task::{Context, Poll}
+	task::{Context, Poll},
 };
 
 use inbox::{
 	config::{
-		Config, DkimConfig, MailAuthConfig, OutboundConfig, ServerConfig, SmtpConfig
+		Config, DkimConfig, MailAuthConfig, OutboundConfig, OutboundQueueConfig, OutboundTlsMode,
+		ServerConfig, SmtpConfig,
 	},
 	protocols::smtp::{
 		commands::Command,
 		handler::{self, DeliveryMode, outgoing::OutgoingRequest},
-		state::{SessionState, SmtpSession}
-	}
+		state::{SessionState, SmtpSession},
+	},
 };
 use tokio::{
 	io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader},
 	net::TcpListener,
-	sync::oneshot
+	sync::oneshot,
 };
 
 const TEST_DKIM_PKCS8_B64: &str = "MIIEogIBAAKCAQEAzCURu2qY2PLkq7+ANw735E6VJ06zhQVd0os2Tr5fMzdMsiFQZOTXjoYcMxymNjWa4t4+vwXiW4RQ+6UG4GdRChPHAIDm95nwOGUXm/q6k/csJN9NHdvcR3zadZUgZE7dD0RKjqWVwJT2/oglfq5TH9EVYjJfcsooupKi9Zn+70izaFNQkPgcq/UBgivBL9DGUDvM+pA3lViENHkqenTl9GvBfwXuKcB6e+N+iNSVU9OOoTkz59xJoFoUK/D1AT/270y3fDX3sw/vBb4UFS6aFfhfudau1JVGsGaLjOoYmJnvRU2vTZzeycLzY9qdYgat49VL3YGGleZt76Gns7RygQIDAQABAoIBAGEq+8ezM1GAO2usWQDb9Q4MgV4WTchxB3lhndXZM0MTfUQEK1n6uscx+lYxusNuvGxj0IXn7RgWYN2GbUF+q8oaI8yPjmAoO3j8VUJ/EzO+oJpkVzZxIeY8/VaeRq64AuxzWvGOyzrBLNd2QjKMEzC/umflBh2DL+OuTDaOuBN4MnFjliheVLcUByZHWdGXaLF78OHZ4QiWeG4sQ3A13W4eNpJJa7e0fuIqUPzrxstAZnt+Rq90+B01ElS0HWxH4fadZUS6F3cFoI2PyIfq1iK+0i5MclIuE1+A94T8VWfZz5BWRgV9Ximgz08p8Jp6OueeXF5gASxcq4b1WB8YQ2kCgYEA/ZBD3zU0ungEX1H5h89PC3+blXFO5EikG0PqHcd+Jgr1ia5Jf7e5tp7K9Z10BTJVm1rOBaeHcPSudxryFfHr3+TJHoBcWoQjOo1FnqMYvfhTyuLldwJ36UghHzAOmJ1c63hubKL0W9yUVd90AjZcSHexoLnkLN0yKBgohDMWYa8CgYEAzhs9fHRMGTNs0MiOy4Onem8oZWFp4CwQATwFn4/552tPrHYeH8ASCUl2uNHuHVfouMMa6ujEyhPekIdEWSfwGPUVWYMaEWGRRPK3AnB3NRR1vw/odvEM/OqTERaPWtpNlK4lxP23Eq7za7xLbWxHQ6UVX15niNuZs05IYcmnas8CgYBhl40H8+p/eoH0ThDEfL3npw2yzxGWO38uH02UeJvM+JrYiwQu6//Gkgd70UY+WckpKiHxezFeAE7F+NEEMUCfw+bEnpLtI76LYqRREmULePCHPh0jWQfd+a0F2/FCPA7vckLN/UofsR5GjuKPl2ydV7Q+ME3qFpifZezyNNeAcQKBgBH9Hqi2Hc41RtISLyRkIUH2Ybg3gF4oel0hN/xtPIqOOy36QTbUNL7Kwqnu6LF28sDthnPqTQK2KT7ED5sYeUQ0X+CoKKZLtbom1QJJfp4LYxuB7/AxqciJULy1E14Cn7LSYEmJO2lOC8DjdlHemXm19t+UBcVUJV4Y/whJ6WrRAoGAK/vkD4ewCN0MLeOhskAkXalc6c9rqotAiQSe10wViy4sqUuRkfqB7xcHATD9NOcLeAWa7UrZnbu14BaYRFrGlYQyA5qNjBxsOzMX4k1V2XkGBggieTeSuW/833o3ewNu1P5XjZ9zfTbMA26++kdPBbHksfqENMGhvTUiGkbEZoY=";
@@ -181,7 +182,10 @@ async fn outbound_submission_sends_and_signs_dkim() {
 					let mut data = Vec::new();
 					loop {
 						let mut bytes = Vec::new();
-						let read = reader.read_until(b'\n', &mut bytes).await.expect("read data");
+						let read = reader
+							.read_until(b'\n', &mut bytes)
+							.await
+							.expect("read data");
 						if read == 0 {
 							break;
 						}
@@ -244,22 +248,32 @@ fn test_config(outbound_port: u16, submission_port: u16) -> Config {
 		smtp: SmtpConfig {
 			transfer_port: 2525,
 			submission_port,
+			inbound_max_rcpt_to: 100,
+			inbound_max_message_bytes: 10 * 1024 * 1024,
+			outbound_queue: OutboundQueueConfig {
+				enabled: false,
+				poll_interval_secs: 1,
+				batch_size: 10,
+				lease_secs: 30,
+				retry_base_delay_secs: 1,
+				retry_max_delay_secs: 2,
+				max_attempts: 2,
+				ttl_secs: 60,
+			},
 			outbound: OutboundConfig {
 				default_port: outbound_port,
 				require_starttls: false,
 				allow_invalid_certs: true,
 				allow_plaintext_fallback: true,
+				tls_mode: OutboundTlsMode::Opportunistic,
+				mta_sts_enforce: false,
+				tls_report_dir: "data/tlsrpt-test".to_string(),
 				timeout: std::time::Duration::from_secs(5),
 				dkim: Some(DkimConfig {
 					domain: "sender.test".into(),
 					selector: "mail".into(),
 					private_key_b64_pkcs8: TEST_DKIM_PKCS8_B64.into(),
-					headers: vec![
-						"From".into(),
-						"To".into(),
-						"Subject".into(),
-						"Date".into()
-					],
+					headers: vec!["From".into(), "To".into(), "Subject".into(), "Date".into()],
 				}),
 			},
 		},
