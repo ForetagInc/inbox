@@ -4,7 +4,7 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use mail_auth::{
 	common::crypto::{RsaKey, Sha256},
 	dkim::DkimSigner,
-	hickory_resolver::name_server::TokioConnectionProvider
+	hickory_resolver::name_server::TokioConnectionProvider,
 };
 use mail_builder::MessageBuilder;
 use mail_send::{SmtpClient, SmtpClientBuilder, smtp::message::Message};
@@ -13,7 +13,11 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use crate::{
 	config::{Config, DkimConfig},
 	db,
-	protocols::smtp::{error::OutgoingError, transaction::Transaction}
+	protocols::smtp::{
+		error::OutgoingError,
+		handler::tls::{tls_required_for_domain, write_tls_failure_report},
+		transaction::Transaction,
+	},
 };
 
 #[derive(Debug, Clone)]
@@ -90,10 +94,11 @@ async fn deliver_to_domain(
 	dkim: Option<&DkimConfig>,
 ) -> Result<(), OutgoingError> {
 	let targets = resolve_delivery_targets(domain).await?;
+	let tls_required = tls_required_for_domain(domain, config).await?;
 	let mut last_error: Option<OutgoingError> = None;
 
 	for target in targets {
-		match send_via_host(&target, mail.clone(), config, dkim).await {
+		match send_via_host(domain, &target, mail.clone(), config, dkim, tls_required).await {
 			Ok(()) => return Ok(()),
 			Err(err) => last_error = Some(err),
 		}
@@ -103,9 +108,10 @@ async fn deliver_to_domain(
 }
 
 async fn resolve_delivery_targets(domain: &str) -> Result<Vec<String>, OutgoingError> {
-	let resolver = mail_auth::hickory_resolver::TokioResolver::builder(TokioConnectionProvider::default())
-		.map(|builder| builder.build())
-		.map_err(|e| OutgoingError::Relay(format!("resolver init failed: {e}")))?;
+	let resolver =
+		mail_auth::hickory_resolver::TokioResolver::builder(TokioConnectionProvider::default())
+			.map(|builder| builder.build())
+			.map_err(|e| OutgoingError::Relay(format!("resolver init failed: {e}")))?;
 	let mx_records = resolver.mx_lookup(domain).await;
 	let mut hosts = Vec::new();
 
@@ -127,40 +133,54 @@ async fn resolve_delivery_targets(domain: &str) -> Result<Vec<String>, OutgoingE
 }
 
 async fn send_via_host(
+	domain: &str,
 	host: &str,
 	mail: Message<'_>,
 	config: &Config,
 	dkim: Option<&DkimConfig>,
+	tls_required: bool,
 ) -> Result<(), OutgoingError> {
 	ensure_rustls_crypto_provider();
 
 	let outbound = &config.smtp.outbound;
+	let require_tls = tls_required || outbound.require_starttls;
 	let mut builder = SmtpClientBuilder::new(host.to_string(), outbound.default_port)
 		.implicit_tls(false)
 		.helo_host(config.server.hostname.clone())
 		.timeout(outbound.timeout);
 
-	if outbound.allow_invalid_certs {
+	if outbound.allow_invalid_certs && !require_tls {
 		builder = builder.allow_invalid_certs();
 	}
 
-	if outbound.require_starttls {
-		let mut client = builder
-			.connect()
-			.await
-			.map_err(|e| OutgoingError::Relay(format!("starttls delivery to {host} failed: {e}")))?;
-		send_with_client(&mut client, mail, dkim).await
+	if require_tls {
+		let mut client = match builder.connect().await {
+			Ok(c) => c,
+			Err(err) => {
+				let reason = format!("starttls delivery to {host} failed: {err}");
+				write_tls_failure_report(config, domain, host, &reason).await;
+				return Err(OutgoingError::Relay(reason));
+			}
+		};
+		match send_with_client(&mut client, mail, dkim).await {
+			Ok(()) => Ok(()),
+			Err(err) => {
+				write_tls_failure_report(config, domain, host, &err.to_string()).await;
+				Err(err)
+			}
+		}
 	} else {
 		match builder.connect().await {
 			Ok(mut client) => send_with_client(&mut client, mail, dkim).await,
 			Err(_) if outbound.allow_plaintext_fallback => {
-				let mut client = builder
-					.connect_plain()
-					.await
-					.map_err(|e| OutgoingError::Relay(format!("plaintext delivery to {host} failed: {e}")))?;
+				let mut client = builder.connect_plain().await.map_err(|e| {
+					OutgoingError::Relay(format!("plaintext delivery to {host} failed: {e}"))
+				})?;
 				send_with_client(&mut client, mail, dkim).await
 			}
-			Err(err) => Err(OutgoingError::Relay(format!("delivery to {host} failed: {err}"))),
+			Err(err) => Err(OutgoingError::Relay(format!(
+				"delivery to {host} failed: {err}"
+			))),
 		}
 	}
 }
@@ -192,7 +212,9 @@ async fn send_with_client<T: AsyncRead + AsyncWrite + Unpin>(
 	Ok(())
 }
 
-fn recipients_by_domain(recipients: Vec<String>) -> Result<HashMap<String, Vec<String>>, OutgoingError> {
+fn recipients_by_domain(
+	recipients: Vec<String>,
+) -> Result<HashMap<String, Vec<String>>, OutgoingError> {
 	let mut grouped = HashMap::<String, Vec<String>>::new();
 	for rcpt in recipients {
 		let domain = extract_domain(&rcpt)
@@ -219,7 +241,11 @@ fn build_rsa_dkim_signer(
 
 	let key = RsaKey::<Sha256>::from_pkcs8_der(&private_key)
 		.or_else(|_| RsaKey::<Sha256>::from_der(&private_key))
-		.map_err(|e| OutgoingError::Dkim(format!("invalid private key (expected PKCS8 or PKCS1 DER): {e}")))?;
+		.map_err(|e| {
+			OutgoingError::Dkim(format!(
+				"invalid private key (expected PKCS8 or PKCS1 DER): {e}"
+			))
+		})?;
 
 	Ok(DkimSigner::from_key(key)
 		.domain(dkim.domain.clone())

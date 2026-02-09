@@ -1,12 +1,17 @@
-use std::{net::IpAddr, path::PathBuf};
+use std::net::IpAddr;
 
 use mail_auth::{
 	AuthenticatedMessage, DkimResult, DmarcResult, MessageAuthenticator, SpfResult,
-	dmarc::verify::DmarcParameters, spf::verify::SpfParameters
+	dmarc::verify::DmarcParameters, spf::verify::SpfParameters,
 };
-use tokio::{fs, io::AsyncWriteExt};
+use mail_parser::MimeHeaders;
 
-use crate::{config::Config, db, protocols::smtp::error::IncomingError};
+use crate::{
+	config::Config,
+	db::{self, TenantEncryptionMode},
+	protocols::smtp::error::IncomingError,
+	storage::{self, EncryptionMode, StoragePolicy},
+};
 
 #[derive(Debug, Clone)]
 pub struct MailAuthVerdict {
@@ -43,7 +48,12 @@ pub async fn verify_mail(
 
 	let dkim_output = authenticator.verify_dkim(&authenticated_message).await;
 	let spf_output = authenticator
-		.verify_spf(SpfParameters::verify_mail_from(ip, helo_domain, host_domain, sender))
+		.verify_spf(SpfParameters::verify_mail_from(
+			ip,
+			helo_domain,
+			host_domain,
+			sender,
+		))
 		.await;
 
 	let sender_domain = extract_header_from_domain(&authenticated_message)
@@ -52,8 +62,13 @@ pub async fn verify_mail(
 
 	let dmarc_output = authenticator
 		.verify_dmarc(
-			DmarcParameters::new(&authenticated_message, &dkim_output, &sender_domain, &spf_output)
-				.with_domain_suffix_fn(|domain| psl::domain_str(domain).unwrap_or(domain))
+			DmarcParameters::new(
+				&authenticated_message,
+				&dkim_output,
+				&sender_domain,
+				&spf_output,
+			)
+			.with_domain_suffix_fn(|domain| psl::domain_str(domain).unwrap_or(domain)),
 		)
 		.await;
 
@@ -66,30 +81,81 @@ pub async fn verify_mail(
 
 pub async fn persist_incoming_message(
 	message: &[u8],
-	message_id_hint: &str,
-) -> Result<PathBuf, IncomingError> {
-	let dir = std::env::var("INBOX_INCOMING_DIR")
-		.map(PathBuf::from)
-		.unwrap_or_else(|_| PathBuf::from("data/incoming"));
-	fs::create_dir_all(&dir)
-		.await
-		.map_err(|e| IncomingError::Storage(e.to_string()))?;
+	parsed: &mail_parser::Message<'_>,
+	recipients: &[String],
+) -> Result<Vec<String>, IncomingError> {
+	let message_id = storage::sanitize_path_component(parsed.message_id().unwrap_or("message"));
+	let mut stored = Vec::new();
 
-	let safe_hint = sanitize_path_component(message_id_hint);
-	let filename = format!("{}_{}.eml", chrono::Utc::now().timestamp_millis(), safe_hint);
-	let path = dir.join(filename);
-	let mut file = fs::File::create(&path)
-		.await
-		.map_err(|e| IncomingError::Storage(e.to_string()))?;
+	for recipient in recipients {
+		let Some((mailbox, domain)) = split_recipient(recipient) else {
+			continue;
+		};
 
-	file.write_all(message)
-		.await
-		.map_err(|e| IncomingError::Storage(e.to_string()))?;
-	file.flush()
-		.await
-		.map_err(|e| IncomingError::Storage(e.to_string()))?;
+		let domain_settings = db::domain_settings(domain).await;
+		let policy = storage_policy_for_recipient(mailbox, domain, domain_settings.as_ref());
 
-	Ok(path)
+		let msg_key = storage::put_raw_message(&policy, &message_id, message).await?;
+		stored.push(msg_key);
+
+		// E2EE tenants are metadata-only server-side: no parsed body indexing blobs.
+		if policy.mode == EncryptionMode::E2ee {
+			continue;
+		}
+
+		for (idx, part) in parsed.attachments().enumerate() {
+			let content_type = part.content_type().map(|ct| {
+				format!(
+					"{}/{}",
+					ct.c_type,
+					ct.c_subtype.as_deref().unwrap_or("octet-stream")
+				)
+			});
+			let part_id = format!("p{idx}");
+			let _ = storage::put_attachment(
+				&policy,
+				&message_id,
+				&part_id,
+				content_type.as_deref(),
+				part.contents(),
+			)
+			.await?;
+		}
+
+		if storage::store_parsed_parts() {
+			for (idx, part) in parsed.text_bodies().enumerate() {
+				let mime_path = format!("text/{idx}");
+				let _ = storage::put_part_blob(
+					&policy,
+					&message_id,
+					&mime_path,
+					Some("text/plain; charset=utf-8"),
+					part.contents(),
+				)
+				.await?;
+			}
+
+			for (idx, part) in parsed.html_bodies().enumerate() {
+				let mime_path = format!("html/{idx}");
+				let _ = storage::put_part_blob(
+					&policy,
+					&message_id,
+					&mime_path,
+					Some("text/html; charset=utf-8"),
+					part.contents(),
+				)
+				.await?;
+			}
+		}
+	}
+
+	if stored.is_empty() {
+		return Err(IncomingError::Storage(
+			"no valid recipient mailbox/domain to store message".to_string(),
+		));
+	}
+
+	Ok(stored)
 }
 
 fn extract_header_from_domain(message: &AuthenticatedMessage<'_>) -> Option<String> {
@@ -132,20 +198,6 @@ fn dmarc_result(output: &mail_auth::DmarcOutput) -> DmarcResult {
 	}
 }
 
-fn sanitize_path_component(input: &str) -> String {
-	let mut out = String::with_capacity(input.len());
-	for c in input.chars() {
-		if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-			out.push(c);
-		}
-	}
-	if out.is_empty() {
-		"mail".to_string()
-	} else {
-		out
-	}
-}
-
 pub async fn accepted_for_recipients(
 	config: &Config,
 	recipients: &[String],
@@ -156,7 +208,9 @@ pub async fn accepted_for_recipients(
 		let Some(domain) = extract_domain(recipient) else {
 			continue;
 		};
-		let overrides = db::domain_settings(domain).await.and_then(|settings| settings.auth);
+		let overrides = db::domain_settings(domain)
+			.await
+			.and_then(|settings| settings.auth);
 		let policy = config.merged_auth_policy(overrides.as_ref());
 		if !verdict.accepted(&policy) {
 			return false;
@@ -195,4 +249,35 @@ fn parse_test_auth_header(raw: &[u8]) -> Option<MailAuthVerdict> {
 	};
 
 	Some(MailAuthVerdict { spf, dkim, dmarc })
+}
+
+fn split_recipient(recipient: &str) -> Option<(&str, &str)> {
+	let (mailbox, domain) = recipient.trim().rsplit_once('@')?;
+	if mailbox.is_empty() || domain.is_empty() {
+		return None;
+	}
+	Some((mailbox, domain))
+}
+
+fn storage_policy_for_recipient(
+	mailbox: &str,
+	domain: &str,
+	settings: Option<&db::DomainSettings>,
+) -> StoragePolicy {
+	let org = settings
+		.and_then(|s| s.org_id.clone())
+		.unwrap_or_else(|| domain.to_string());
+	let enc = settings.and_then(|s| s.encryption.as_ref());
+	let mode = match enc.map(|e| e.mode) {
+		Some(TenantEncryptionMode::E2ee) => EncryptionMode::E2ee,
+		_ => EncryptionMode::Standard,
+	};
+
+	StoragePolicy {
+		org,
+		mailbox: mailbox.to_string(),
+		mode,
+		sse_c_key_b64: enc.and_then(|e| e.sse_c_key_b64.clone()),
+		wrapped_dek_customer: enc.and_then(|e| e.wrapped_dek_customer.clone()),
+	}
 }

@@ -1,18 +1,20 @@
 pub mod attachment;
 pub mod incoming;
 pub mod outgoing;
+pub mod tls;
 
-use tracing::info;
-use std::io::Result;
-use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt};
 use mail_parser::MessageParser;
+use std::io::{Error, ErrorKind, Result};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt};
+use tracing::info;
 
 use crate::config::Config;
 use crate::protocols::smtp::commands::Command;
 use crate::protocols::smtp::handler::{
 	incoming::{accepted_for_recipients, persist_incoming_message, verify_mail},
-	outgoing::relay_transaction
+	outgoing::relay_transaction,
 };
+use crate::protocols::smtp::queue;
 use crate::protocols::smtp::state::{SessionState, SmtpSession};
 
 async fn reply<W: AsyncWrite + Unpin>(w: &mut W, code: u16, msg: &str) -> Result<()> {
@@ -54,13 +56,20 @@ where
 		}
 
 		Command::Rcpt(to) => {
-			if !matches!(session.state, SessionState::ReceivingMail | SessionState::ReceivingRcpt) {
-                reply(writer, 503, "5.5.1 Bad sequence of commands").await?;
-                return Ok(());
-            }
-            session.state = SessionState::ReceivingRcpt;
-            let txn = session.transaction.as_mut().expect("Transaction Exists");
-            txn.rcpt_to.push(to.clone());
+			if !matches!(
+				session.state,
+				SessionState::ReceivingMail | SessionState::ReceivingRcpt
+			) {
+				reply(writer, 503, "5.5.1 Bad sequence of commands").await?;
+				return Ok(());
+			}
+			session.state = SessionState::ReceivingRcpt;
+			let txn = session.transaction.as_mut().expect("Transaction Exists");
+			if txn.rcpt_to.len() >= config.smtp.inbound_max_rcpt_to {
+				reply(writer, 452, "4.5.3 Too many recipients").await?;
+				return Ok(());
+			}
+			txn.rcpt_to.push(to.clone());
 			info!("RCPT TO: {}", to);
 			reply(writer, 250, "OK").await?;
 		}
@@ -73,19 +82,26 @@ where
 
 			if txn.mail_from.is_none() {
 				reply(writer, 503, "5.5.1 Need MAIL FROM first").await?;
-                return Ok(());
+				return Ok(());
 			}
 
 			if txn.rcpt_to.is_empty() {
 				reply(writer, 554, "5.5.1 No valid recipients").await?;
-                return Ok(());
+				return Ok(());
 			}
 
 			session.state = SessionState::ReceivingData;
 
 			reply(writer, 354, "End data with <CR><LF>.<CR><LF>").await?;
 
-			let raw = read_message_data(reader).await?;
+			let raw = match read_message_data(reader, config.smtp.inbound_max_message_bytes).await {
+				Ok(raw) => raw,
+				Err(err) if err.kind() == ErrorKind::InvalidData => {
+					reply(writer, 552, "5.3.4 Message size exceeds fixed maximum").await?;
+					return Ok(());
+				}
+				Err(err) => return Err(err),
+			};
 			let parser = MessageParser::default();
 
 			match parser.parse(&raw) {
@@ -111,46 +127,82 @@ where
 								&config.server.hostname,
 								mail_from,
 								raw_message,
-								config.auth.allow_header_override
+								config.auth.allow_header_override,
 							)
 							.await;
 
-								match verdict {
-									Ok(v) => {
-										if !accepted_for_recipients(config, &txn.rcpt_to, &v).await {
-											reply(writer, 550, "5.7.1 Message rejected by SPF/DKIM/DMARC policy")
-												.await?;
+							match verdict {
+								Ok(v) => {
+									if !accepted_for_recipients(config, &txn.rcpt_to, &v).await {
+										reply(
+											writer,
+											550,
+											"5.7.1 Message rejected by SPF/DKIM/DMARC policy",
+										)
+										.await?;
 									} else {
-										let message_id_hint = message.message_id().unwrap_or("message");
-										let path = persist_incoming_message(raw_message, message_id_hint).await;
-										match path {
-											Ok(path) => {
-												info!("Stored inbound message at {}", path.display());
+										let stored = persist_incoming_message(
+											raw_message,
+											&message,
+											&txn.rcpt_to,
+										)
+										.await;
+										match stored {
+											Ok(keys) => {
+												info!(
+													"Stored inbound message objects: {}",
+													keys.join(", ")
+												);
 												reply(writer, 250, "2.0.0 OK: received").await?;
 											}
 											Err(err) => {
 												info!("Inbound storage error: {err}");
-												reply(writer, 451, "4.3.0 Temporary local storage failure").await?;
+												reply(
+													writer,
+													451,
+													"4.3.0 Temporary local storage failure",
+												)
+												.await?;
 											}
 										}
 									}
 								}
 								Err(err) => {
 									info!("Inbound auth verification error: {err}");
-									reply(writer, 451, "4.7.0 Authentication check temporary failure").await?;
+									reply(
+										writer,
+										451,
+										"4.7.0 Authentication check temporary failure",
+									)
+									.await?;
 								}
 							}
 						}
-						DeliveryMode::Submission => match relay_transaction(&txn, config).await {
-							Ok(()) => {
-								reply(writer, 250, "2.0.0 OK: submitted").await?;
-							}
-								Err(err) => {
-									info!("Submission delivery error: {err}");
-									reply(writer, 554, "5.7.1 Message delivery failed").await?;
+						DeliveryMode::Submission => {
+							if config.smtp.outbound_queue.enabled {
+								match queue::enqueue_transaction(&txn, config).await {
+									Ok(job_id) => {
+										info!("Queued outbound submission job {}", job_id);
+										reply(writer, 250, "2.0.0 OK: queued").await?;
+									}
+									Err(err) => {
+										info!("Submission queueing error: {err}");
+										reply(writer, 451, "4.3.0 Queueing failure").await?;
+									}
+								}
+							} else {
+								match relay_transaction(&txn, config).await {
+									Ok(()) => {
+										reply(writer, 250, "2.0.0 OK: submitted").await?;
+									}
+									Err(err) => {
+										info!("Submission delivery error: {err}");
+										reply(writer, 554, "5.7.1 Message delivery failed").await?;
+									}
 								}
 							}
 						}
+					}
 				}
 				None => {
 					reply(writer, 550, "5.6.0 Message parse failure").await?;
@@ -181,7 +233,10 @@ where
 }
 
 /// Reads the full SMTP DATA payload, handling dot-stuffing.
-async fn read_message_data<R: AsyncBufRead + Unpin>(reader: &mut R) -> Result<Vec<u8>> {
+async fn read_message_data<R: AsyncBufRead + Unpin>(
+	reader: &mut R,
+	max_bytes: usize,
+) -> Result<Vec<u8>> {
 	let mut raw = Vec::new();
 
 	loop {
@@ -200,6 +255,12 @@ async fn read_message_data<R: AsyncBufRead + Unpin>(reader: &mut R) -> Result<Ve
 		}
 
 		raw.extend_from_slice(&line);
+		if raw.len() > max_bytes {
+			return Err(Error::new(
+				ErrorKind::InvalidData,
+				"message size exceeds configured maximum",
+			));
+		}
 	}
 
 	Ok(raw)
