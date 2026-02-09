@@ -28,6 +28,18 @@ DEFINE FIELD OVERWRITE lease_until_epoch_secs ON outbound_queue
 DEFINE FIELD OVERWRITE last_error ON outbound_queue
 	TYPE option<string>;
 
+DEFINE FIELD OVERWRITE org_id ON outbound_queue
+	TYPE option<string>;
+
+DEFINE FIELD OVERWRITE idempotency_key ON outbound_queue
+	TYPE option<string>;
+
+DEFINE FIELD OVERWRITE actor_account ON outbound_queue
+	TYPE option<string>;
+
+DEFINE FIELD OVERWRITE shared_inbox ON outbound_queue
+	TYPE option<string>;
+
 DEFINE FIELD OVERWRITE payload_kind ON outbound_queue
 	TYPE string;
 
@@ -40,3 +52,10 @@ DEFINE INDEX OVERWRITE outbound_queue_job_id_unique ON outbound_queue
 
 DEFINE INDEX OVERWRITE outbound_queue_due_idx ON outbound_queue
 	FIELDS status, next_attempt_at_epoch_secs, lease_until_epoch_secs;
+
+DEFINE INDEX OVERWRITE outbound_queue_org_status_idx ON outbound_queue
+	FIELDS org_id, status;
+
+DEFINE INDEX OVERWRITE outbound_queue_idempotency_key_unique ON outbound_queue
+	FIELDS idempotency_key
+	UNIQUE;

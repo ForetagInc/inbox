@@ -101,6 +101,14 @@ DEFINE FIELD OVERWRITE send_at ON email
 DEFINE FIELD OVERWRITE created_at ON email
 		TYPE datetime;
 
+DEFINE FIELD OVERWRITE ingest_status ON email
+	TYPE string
+	ASSERT $value IN ['pending', 'committed', 'failed']
+	DEFAULT 'committed';
+
+DEFINE FIELD OVERWRITE ingest_error ON email
+	TYPE option<string>;
+
 ---
 --- Indexes
 ---

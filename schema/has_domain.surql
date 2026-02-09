@@ -31,6 +31,27 @@ DEFINE FIELD OVERWRITE enc_sse_c_key_b64 ON has_domain
 DEFINE FIELD OVERWRITE enc_wrapped_dek_customer ON has_domain
 	TYPE option<string>;
 
+DEFINE FIELD OVERWRITE outbound_dnssec_validate ON has_domain
+	TYPE option<bool>;
+
+DEFINE FIELD OVERWRITE quota_max_recipients_per_message ON has_domain
+	TYPE option<int>;
+
+DEFINE FIELD OVERWRITE quota_hourly_send_limit ON has_domain
+	TYPE option<int>;
+
+DEFINE FIELD OVERWRITE quota_daily_send_limit ON has_domain
+	TYPE option<int>;
+
+DEFINE FIELD OVERWRITE quota_max_queued_jobs ON has_domain
+	TYPE option<int>;
+
+DEFINE FIELD OVERWRITE plus_addressing_enabled ON has_domain
+	TYPE option<bool>;
+
+DEFINE FIELD OVERWRITE plus_delimiter ON has_domain
+	TYPE option<string>;
+
 DEFINE FIELD OVERWRITE is_active ON has_domain
 	TYPE bool
 	DEFAULT true;
