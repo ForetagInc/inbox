@@ -1,7 +1,13 @@
-use async_graphql::{Context, Error, EmptySubscription, Object, Schema, http::GraphiQLSource};
+use async_graphql::{Context, EmptySubscription, Error, Object, Schema, http::GraphiQLSource};
 use axum::response::{self, IntoResponse};
 
-use crate::{config::Config, protocols::smtp::handler::outgoing::{OutgoingRequest, send_outgoing}};
+use crate::{
+	config::Config,
+	protocols::smtp::{
+		handler::outgoing::{OutgoingRequest, send_outgoing},
+		queue,
+	},
+};
 
 pub struct Query;
 
@@ -31,13 +37,20 @@ impl Mutation {
 			to,
 			subject,
 			text_body,
-			html_body
+			html_body,
 		};
 
-		send_outgoing(request, config)
-			.await
-			.map(|_| true)
-			.map_err(|e| Error::new(e.to_string()))
+		if config.smtp.outbound_queue.enabled {
+			queue::enqueue_outgoing_request(request, config)
+				.await
+				.map(|_| true)
+				.map_err(|e| Error::new(e.to_string()))
+		} else {
+			send_outgoing(request, config)
+				.await
+				.map(|_| true)
+				.map_err(|e| Error::new(e.to_string()))
+		}
 	}
 }
 
