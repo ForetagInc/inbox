@@ -21,7 +21,30 @@ pub struct ServerConfig {
 pub struct SmtpConfig {
 	pub transfer_port: u16,
 	pub submission_port: u16,
+	pub inbound_max_rcpt_to: usize,
+	pub inbound_max_message_bytes: usize,
+	pub outbound_queue: OutboundQueueConfig,
 	pub outbound: OutboundConfig,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct OutboundQueueConfig {
+	pub enabled: bool,
+	pub poll_interval_secs: u64,
+	pub batch_size: usize,
+	pub lease_secs: u64,
+	pub retry_base_delay_secs: u64,
+	pub retry_max_delay_secs: u64,
+	pub max_attempts: u32,
+	pub ttl_secs: u64,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum OutboundTlsMode {
+	#[serde(rename = "opportunistic")]
+	Opportunistic,
+	#[serde(rename = "required")]
+	Required,
 }
 
 #[derive(Deserialize, Clone, Debug)]
@@ -30,6 +53,9 @@ pub struct OutboundConfig {
 	pub require_starttls: bool,
 	pub allow_invalid_certs: bool,
 	pub allow_plaintext_fallback: bool,
+	pub tls_mode: OutboundTlsMode,
+	pub mta_sts_enforce: bool,
+	pub tls_report_dir: String,
 	pub timeout: Duration,
 	pub dkim: Option<DkimConfig>,
 }
@@ -69,7 +95,13 @@ impl Config {
 			default_port: env_parse("SMTP_OUTBOUND_PORT", 25u16),
 			require_starttls: env_parse_bool("SMTP_OUTBOUND_REQUIRE_STARTTLS", false),
 			allow_invalid_certs: env_parse_bool("SMTP_OUTBOUND_ALLOW_INVALID_CERTS", false),
-			allow_plaintext_fallback: env_parse_bool("SMTP_OUTBOUND_ALLOW_PLAINTEXT_FALLBACK", true),
+			allow_plaintext_fallback: env_parse_bool(
+				"SMTP_OUTBOUND_ALLOW_PLAINTEXT_FALLBACK",
+				true,
+			),
+			tls_mode: env_parse_outbound_tls_mode("SMTP_OUTBOUND_TLS_MODE"),
+			mta_sts_enforce: env_parse_bool("SMTP_OUTBOUND_MTA_STS_ENFORCE", true),
+			tls_report_dir: env_var("SMTP_TLS_REPORT_DIR", "data/tlsrpt"),
 			timeout: Duration::from_secs(env_parse("SMTP_OUTBOUND_TIMEOUT_SECS", 30u64)),
 			dkim: load_dkim_from_env(),
 		};
@@ -77,6 +109,21 @@ impl Config {
 		let smtp = SmtpConfig {
 			transfer_port: env_parse("SMTP_TRANSFER_PORT", 25u16),
 			submission_port: env_parse("SMTP_SUBMISSION_PORT", 587u16),
+			inbound_max_rcpt_to: env_parse("SMTP_INBOUND_MAX_RCPT_TO", 100usize),
+			inbound_max_message_bytes: env_parse(
+				"SMTP_INBOUND_MAX_MESSAGE_BYTES",
+				25 * 1024 * 1024usize,
+			),
+			outbound_queue: OutboundQueueConfig {
+				enabled: env_parse_bool("SMTP_OUTBOUND_QUEUE_ENABLED", true),
+				poll_interval_secs: env_parse("SMTP_OUTBOUND_QUEUE_POLL_INTERVAL_SECS", 2u64),
+				batch_size: env_parse("SMTP_OUTBOUND_QUEUE_BATCH_SIZE", 100usize),
+				lease_secs: env_parse("SMTP_OUTBOUND_QUEUE_LEASE_SECS", 120u64),
+				retry_base_delay_secs: env_parse("SMTP_OUTBOUND_RETRY_BASE_DELAY_SECS", 30u64),
+				retry_max_delay_secs: env_parse("SMTP_OUTBOUND_RETRY_MAX_DELAY_SECS", 3600u64),
+				max_attempts: env_parse("SMTP_OUTBOUND_MAX_ATTEMPTS", 10u32),
+				ttl_secs: env_parse("SMTP_OUTBOUND_TTL_SECS", 86400u64),
+			},
 			outbound,
 		};
 
@@ -130,9 +177,24 @@ fn env_parse_bool(key: &str, fallback: bool) -> bool {
 		.unwrap_or(fallback)
 }
 
+fn env_parse_outbound_tls_mode(key: &str) -> OutboundTlsMode {
+	match env::var(key)
+		.unwrap_or_else(|_| "required".to_string())
+		.to_ascii_lowercase()
+		.as_str()
+	{
+		"opportunistic" => OutboundTlsMode::Opportunistic,
+		_ => OutboundTlsMode::Required,
+	}
+}
+
 fn load_dkim_from_env() -> Option<DkimConfig> {
-	let domain = env::var("SMTP_DKIM_DOMAIN").ok().filter(|v| !v.is_empty())?;
-	let selector = env::var("SMTP_DKIM_SELECTOR").ok().filter(|v| !v.is_empty())?;
+	let domain = env::var("SMTP_DKIM_DOMAIN")
+		.ok()
+		.filter(|v| !v.is_empty())?;
+	let selector = env::var("SMTP_DKIM_SELECTOR")
+		.ok()
+		.filter(|v| !v.is_empty())?;
 	let private_key_b64_pkcs8 = env::var("SMTP_DKIM_PRIVATE_KEY_B64_PKCS8")
 		.ok()
 		.filter(|v| !v.is_empty())?;
