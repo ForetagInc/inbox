@@ -33,17 +33,17 @@ impl Attachment {
 
 		let stream_result = clamav_client::tokio::scan_buffer(&self.data, clamav, None).await;
 
-		let x = match stream_result {
+		match stream_result {
 			Ok(result) => {
 				let clean = clamav_client::clean(&result).unwrap();
 				if clean {
-					return Ok(true)
+					Ok(true)
 				} else {
-					return Ok(false)
+					Ok(false)
 				}
 			},
-			Err(_) => return Err(ClamAVError::ScanFailed)
-		};
+			Err(_) => Err(ClamAVError::ScanFailed),
+		}
 	}
 
 	pub async fn upload(&self) {
@@ -58,4 +58,14 @@ impl Attachment {
 			Err(err) => error!("Failed to scan attachment: {}", err)
 		}
 	}
+}
+
+pub fn find_oversized_attachment(
+	parsed: &mail_parser::Message<'_>,
+	limit_bytes: usize,
+) -> Option<usize> {
+	parsed
+		.attachments()
+		.map(|part| part.contents().len())
+		.find(|size| *size > limit_bytes)
 }

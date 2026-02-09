@@ -6,15 +6,17 @@ pub mod tls;
 use mail_parser::MessageParser;
 use std::io::{Error, ErrorKind, Result};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt};
-use tracing::info;
+use tracing::{Level, event, instrument};
 
 use crate::config::Config;
 use crate::protocols::smtp::commands::Command;
 use crate::protocols::smtp::handler::{
+	attachment::find_oversized_attachment,
 	incoming::{accepted_for_recipients, persist_incoming_message, verify_mail},
-	outgoing::relay_transaction,
+	outgoing::{OUTBOUND_MAX_ATTACHMENT_BYTES, OUTBOUND_MAX_MESSAGE_BYTES, relay_transaction},
 };
 use crate::protocols::smtp::queue;
+use crate::protocols::smtp::rate_limit;
 use crate::protocols::smtp::state::{SessionState, SmtpSession};
 
 async fn reply<W: AsyncWrite + Unpin>(w: &mut W, code: u16, msg: &str) -> Result<()> {
@@ -39,6 +41,22 @@ where
 	R: AsyncBufRead + Unpin,
 	W: AsyncWrite + Unpin,
 {
+	handle_command_inner(command, session, mode, config, reader, writer).await
+}
+
+#[instrument(skip_all, fields(mode = ?mode, peer_ip = ?session.peer_ip))]
+async fn handle_command_inner<R, W>(
+	command: Command,
+	session: &mut SmtpSession,
+	mode: DeliveryMode,
+	config: &Config,
+	reader: &mut R,
+	writer: &mut W,
+) -> Result<()>
+where
+	R: AsyncBufRead + Unpin,
+	W: AsyncWrite + Unpin,
+{
 	match command {
 		Command::Helo(domain) | Command::Ehlo(domain) => {
 			session.state = SessionState::Ready;
@@ -47,11 +65,24 @@ where
 		}
 
 		Command::Mail(from) => {
+			if let Some(peer_ip) = session.peer_ip
+				&& !rate_limit::allow_message(peer_ip, mode, config).await
+			{
+				event!(
+					target: "smtp.ingress",
+					Level::WARN,
+					action = "reject",
+					reason = "rate_limit_message",
+					mode = ?mode,
+					peer_ip = %peer_ip
+				);
+				reply(writer, 451, "4.7.1 Rate limit exceeded").await?;
+				return Ok(());
+			}
 			session.state = SessionState::ReceivingMail;
 			session.reset_txn();
 			let txn = session.transaction.as_mut().expect("Transaction Exists");
 			txn.mail_from = Some(from.clone());
-			info!("MAIL FROM: {}", from);
 			reply(writer, 250, "Ok").await?;
 		}
 
@@ -70,7 +101,6 @@ where
 				return Ok(());
 			}
 			txn.rcpt_to.push(to.clone());
-			info!("RCPT TO: {}", to);
 			reply(writer, 250, "OK").await?;
 		}
 
@@ -94,7 +124,11 @@ where
 
 			reply(writer, 354, "End data with <CR><LF>.<CR><LF>").await?;
 
-			let raw = match read_message_data(reader, config.smtp.inbound_max_message_bytes).await {
+			let max_data_bytes = match mode {
+				DeliveryMode::Transfer => config.smtp.max_message_bytes,
+				DeliveryMode::Submission => OUTBOUND_MAX_MESSAGE_BYTES,
+			};
+			let raw = match read_message_data(reader, max_data_bytes).await {
 				Ok(raw) => raw,
 				Err(err) if err.kind() == ErrorKind::InvalidData => {
 					reply(writer, 552, "5.3.4 Message size exceeds fixed maximum").await?;
@@ -106,7 +140,22 @@ where
 
 			match parser.parse(&raw) {
 				Some(message) => {
-					info!("DATA BYTES: {:?}", message);
+					if matches!(mode, DeliveryMode::Submission)
+						&& let Some(actual) =
+							find_oversized_attachment(&message, OUTBOUND_MAX_ATTACHMENT_BYTES)
+					{
+						event!(
+							target: "smtp.policy.attachment_reject",
+							Level::WARN,
+							direction = "outbound",
+							limit_bytes = OUTBOUND_MAX_ATTACHMENT_BYTES as i64,
+							actual_bytes = actual as i64
+						);
+						reply(writer, 552, "5.3.4 Attachment exceeds fixed maximum").await?;
+						session.state = SessionState::Ready;
+						session.reset_txn();
+						return Ok(());
+					}
 
 					let mut txn = session.transaction.take().unwrap();
 					txn.data = Some(raw.clone());
@@ -148,15 +197,17 @@ where
 										)
 										.await;
 										match stored {
-											Ok(keys) => {
-												info!(
-													"Stored inbound message objects: {}",
-													keys.join(", ")
+											Ok(_) => {
+												event!(
+													target: "smtp.ingress",
+													Level::INFO,
+													action = "accept",
+													mode = "transfer",
+													outcome = "stored"
 												);
 												reply(writer, 250, "2.0.0 OK: received").await?;
 											}
-											Err(err) => {
-												info!("Inbound storage error: {err}");
+											Err(_) => {
 												reply(
 													writer,
 													451,
@@ -167,8 +218,7 @@ where
 										}
 									}
 								}
-								Err(err) => {
-									info!("Inbound auth verification error: {err}");
+								Err(_) => {
 									reply(
 										writer,
 										451,
@@ -181,22 +231,32 @@ where
 						DeliveryMode::Submission => {
 							if config.smtp.outbound_queue.enabled {
 								match queue::enqueue_transaction(&txn, config).await {
-									Ok(job_id) => {
-										info!("Queued outbound submission job {}", job_id);
+									Ok(_) => {
+										event!(
+											target: "smtp.egress",
+											Level::INFO,
+											action = "enqueue",
+											mode = "submission"
+										);
 										reply(writer, 250, "2.0.0 OK: queued").await?;
 									}
-									Err(err) => {
-										info!("Submission queueing error: {err}");
+									Err(_) => {
 										reply(writer, 451, "4.3.0 Queueing failure").await?;
 									}
 								}
 							} else {
 								match relay_transaction(&txn, config).await {
 									Ok(()) => {
+										event!(
+											target: "smtp.egress",
+											Level::INFO,
+											action = "deliver",
+											mode = "submission",
+											outcome = "accepted"
+										);
 										reply(writer, 250, "2.0.0 OK: submitted").await?;
 									}
-									Err(err) => {
-										info!("Submission delivery error: {err}");
+									Err(_) => {
 										reply(writer, 554, "5.7.1 Message delivery failed").await?;
 									}
 								}

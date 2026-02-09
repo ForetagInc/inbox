@@ -1,6 +1,7 @@
 use std::{collections::HashMap, sync::OnceLock};
 
 use base64::{Engine, engine::general_purpose::STANDARD};
+use mail_parser::MessageParser;
 use mail_auth::{
 	common::crypto::{RsaKey, Sha256},
 	dkim::DkimSigner,
@@ -9,16 +10,27 @@ use mail_auth::{
 use mail_builder::MessageBuilder;
 use mail_send::{SmtpClient, SmtpClientBuilder, smtp::message::Message};
 use tokio::io::{AsyncRead, AsyncWrite};
+use tracing::instrument;
 
 use crate::{
 	config::{Config, DkimConfig},
 	db,
 	protocols::smtp::{
 		error::OutgoingError,
-		handler::tls::{tls_required_for_domain, write_tls_failure_report},
+		handler::{
+			attachment::find_oversized_attachment,
+			tls::{
+			DomainTlsPolicy, TlsFailureContext, dane, evaluate_domain_tls_policy,
+			host_allowed_by_policy, prioritize_targets,
+			write_tls_failure_report,
+			},
+		},
 		transaction::Transaction,
 	},
 };
+
+pub const OUTBOUND_MAX_MESSAGE_BYTES: usize = 25 * 1024 * 1024;
+pub const OUTBOUND_MAX_ATTACHMENT_BYTES: usize = 18 * 1024 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct OutgoingRequest {
@@ -27,15 +39,20 @@ pub struct OutgoingRequest {
 	pub subject: String,
 	pub text_body: Option<String>,
 	pub html_body: Option<String>,
+	pub idempotency_key: Option<String>,
+	pub actor_account: Option<String>,
+	pub shared_inbox: Option<String>,
 }
 
+#[instrument(skip_all, fields(from = %request.from, recipients = request.to.len()))]
 pub async fn send_outgoing(request: OutgoingRequest, config: &Config) -> Result<(), OutgoingError> {
 	if request.to.is_empty() {
 		return Err(OutgoingError::NoRecipients);
 	}
+	enforce_quota_for_sender_domain(&request.from, request.to.len() as u32).await?;
 	let selected_dkim = resolve_outbound_dkim(&request.from, config).await;
 
-	let recipients = recipients_by_domain(request.to)?;
+	let recipients = recipients_by_domain(request.to).await?;
 	for (domain, domain_recipients) in recipients {
 		let mut builder = MessageBuilder::new()
 			.from(request.from.clone())
@@ -54,6 +71,13 @@ pub async fn send_outgoing(request: OutgoingRequest, config: &Config) -> Result<
 		let rfc822 = builder
 			.write_to_vec()
 			.map_err(|e| OutgoingError::Build(e.to_string()))?;
+		if rfc822.len() > OUTBOUND_MAX_MESSAGE_BYTES {
+			return Err(OutgoingError::QuotaExceeded(format!(
+				"message size {} exceeds fixed outbound limit {}",
+				rfc822.len(),
+				OUTBOUND_MAX_MESSAGE_BYTES
+			)));
+		}
 		let message = Message::new(request.from.clone(), domain_recipients, rfc822);
 		deliver_to_domain(&domain, message, config, selected_dkim.as_ref()).await?;
 	}
@@ -61,6 +85,7 @@ pub async fn send_outgoing(request: OutgoingRequest, config: &Config) -> Result<
 	Ok(())
 }
 
+#[instrument(skip_all, fields(recipients = txn.rcpt_to.len()))]
 pub async fn relay_transaction(txn: &Transaction, config: &Config) -> Result<(), OutgoingError> {
 	let from = txn
 		.mail_from
@@ -70,15 +95,34 @@ pub async fn relay_transaction(txn: &Transaction, config: &Config) -> Result<(),
 	if txn.rcpt_to.is_empty() {
 		return Err(OutgoingError::NoRecipients);
 	}
+	enforce_quota_for_sender_domain(&from, txn.rcpt_to.len() as u32).await?;
 
 	let data = txn
 		.data
 		.as_ref()
 		.ok_or_else(|| OutgoingError::Build("empty DATA payload".into()))?
 		.clone();
+	if data.len() > OUTBOUND_MAX_MESSAGE_BYTES {
+		return Err(OutgoingError::QuotaExceeded(format!(
+			"message size {} exceeds fixed outbound limit {}",
+			data.len(),
+			OUTBOUND_MAX_MESSAGE_BYTES
+		)));
+	}
+	let parser = MessageParser::default();
+	let parsed = parser
+		.parse(&data)
+		.ok_or_else(|| OutgoingError::Build("failed to parse outbound MIME payload".into()))?;
+	if let Some(actual) = find_oversized_attachment(&parsed, OUTBOUND_MAX_ATTACHMENT_BYTES)
+	{
+		return Err(OutgoingError::QuotaExceeded(format!(
+			"attachment size {actual} exceeds configured outbound limit {}",
+			OUTBOUND_MAX_ATTACHMENT_BYTES
+		)));
+	}
 	let selected_dkim = resolve_outbound_dkim(&from, config).await;
 
-	let recipients = recipients_by_domain(txn.rcpt_to.clone())?;
+	let recipients = recipients_by_domain(txn.rcpt_to.clone()).await?;
 	for (domain, domain_recipients) in recipients {
 		let message = Message::new(from.clone(), domain_recipients, data.clone());
 		deliver_to_domain(&domain, message, config, selected_dkim.as_ref()).await?;
@@ -94,11 +138,41 @@ async fn deliver_to_domain(
 	dkim: Option<&DkimConfig>,
 ) -> Result<(), OutgoingError> {
 	let targets = resolve_delivery_targets(domain).await?;
-	let tls_required = tls_required_for_domain(domain, config).await?;
+	let dnssec_validate = resolve_domain_dnssec_validate(domain, config).await;
+	let policy = evaluate_domain_tls_policy(domain, &targets, dnssec_validate, config).await?;
+	let targets = prioritize_targets(&policy, targets);
 	let mut last_error: Option<OutgoingError> = None;
 
 	for target in targets {
-		match send_via_host(domain, &target, mail.clone(), config, dkim, tls_required).await {
+		if !host_allowed_by_policy(&policy, &target) {
+			let context = TlsFailureContext {
+				source: "mta-sts",
+				mta_sts_mode: policy.mta_sts_mode.clone(),
+				dane_required: !policy.dane_required_hosts.is_empty(),
+			};
+			write_tls_failure_report(
+				config,
+				domain,
+				&target,
+				"mx host rejected by MTA-STS policy",
+				&context,
+			)
+			.await;
+			continue;
+		}
+
+		match send_via_host(
+			domain,
+			&target,
+			mail.clone(),
+			config,
+			dkim,
+			policy.require_tls,
+			&policy,
+			dnssec_validate,
+		)
+		.await
+		{
 			Ok(()) => return Ok(()),
 			Err(err) => last_error = Some(err),
 		}
@@ -139,6 +213,8 @@ async fn send_via_host(
 	config: &Config,
 	dkim: Option<&DkimConfig>,
 	tls_required: bool,
+	policy: &DomainTlsPolicy,
+	dnssec_validate: bool,
 ) -> Result<(), OutgoingError> {
 	ensure_rustls_crypto_provider();
 
@@ -158,14 +234,53 @@ async fn send_via_host(
 			Ok(c) => c,
 			Err(err) => {
 				let reason = format!("starttls delivery to {host} failed: {err}");
-				write_tls_failure_report(config, domain, host, &reason).await;
+				let context = TlsFailureContext {
+					source: "smtp-starttls",
+					mta_sts_mode: policy.mta_sts_mode.clone(),
+					dane_required: policy.dane_required_hosts.contains(&host.to_ascii_lowercase()),
+				};
+				write_tls_failure_report(config, domain, host, &reason, &context).await;
 				return Err(OutgoingError::Relay(reason));
 			}
 		};
+		if policy.dane_required_hosts.contains(&host.to_ascii_lowercase()) {
+			let Some(peer_chain) = client.tls_connection().peer_certificates() else {
+				let err = OutgoingError::Relay(format!(
+					"DANE validation failed for {host}: no peer certificates"
+				));
+				let context = TlsFailureContext {
+					source: "smtp-dane",
+					mta_sts_mode: policy.mta_sts_mode.clone(),
+					dane_required: true,
+				};
+				write_tls_failure_report(config, domain, host, &err.to_string(), &context).await;
+				return Err(err);
+			};
+			if let Err(err) = dane::verify_peer_chain_against_tlsa(
+				host,
+				peer_chain,
+				dnssec_validate,
+			)
+			.await
+			{
+				let context = TlsFailureContext {
+					source: "smtp-dane",
+					mta_sts_mode: policy.mta_sts_mode.clone(),
+					dane_required: true,
+				};
+				write_tls_failure_report(config, domain, host, &err.to_string(), &context).await;
+				return Err(err);
+			}
+		}
 		match send_with_client(&mut client, mail, dkim).await {
 			Ok(()) => Ok(()),
 			Err(err) => {
-				write_tls_failure_report(config, domain, host, &err.to_string()).await;
+				let context = TlsFailureContext {
+					source: "smtp-send",
+					mta_sts_mode: policy.mta_sts_mode.clone(),
+					dane_required: policy.dane_required_hosts.contains(&host.to_ascii_lowercase()),
+				};
+				write_tls_failure_report(config, domain, host, &err.to_string(), &context).await;
 				Err(err)
 			}
 		}
@@ -212,14 +327,20 @@ async fn send_with_client<T: AsyncRead + AsyncWrite + Unpin>(
 	Ok(())
 }
 
-fn recipients_by_domain(
+async fn recipients_by_domain(
 	recipients: Vec<String>,
 ) -> Result<HashMap<String, Vec<String>>, OutgoingError> {
 	let mut grouped = HashMap::<String, Vec<String>>::new();
 	for rcpt in recipients {
+		if db::is_recipient_suppressed(&rcpt).await {
+			continue;
+		}
 		let domain = extract_domain(&rcpt)
 			.ok_or_else(|| OutgoingError::Build(format!("invalid recipient address: {rcpt}")))?;
 		grouped.entry(domain.to_string()).or_default().push(rcpt);
+	}
+	if grouped.is_empty() {
+		return Err(OutgoingError::Suppressed);
 	}
 	Ok(grouped)
 }
@@ -261,4 +382,84 @@ async fn resolve_outbound_dkim(sender: &str, config: &Config) -> Option<DkimConf
 		return Some(dkim);
 	}
 	config.smtp.outbound.dkim.clone()
+}
+
+async fn resolve_domain_dnssec_validate(domain: &str, config: &Config) -> bool {
+	if let Some(settings) = db::domain_settings(domain).await
+		&& let Some(v) = settings.outbound_dnssec_validate
+	{
+		return effective_dnssec_validate(config.smtp.outbound.dnssec_validate, Some(v));
+	}
+	effective_dnssec_validate(config.smtp.outbound.dnssec_validate, None)
+}
+
+fn effective_dnssec_validate(default_value: bool, domain_override: Option<bool>) -> bool {
+	domain_override.unwrap_or(default_value)
+}
+
+async fn enforce_quota_for_sender_domain(
+	sender: &str,
+	recipients: u32,
+) -> Result<(), OutgoingError> {
+	let Some((_, sender_domain)) = sender.rsplit_once('@') else {
+		return Ok(());
+	};
+	let Some(settings) = db::domain_settings(sender_domain).await else {
+		return Ok(());
+	};
+	let Some(quota) = settings.quota.as_ref() else {
+		return Ok(());
+	};
+
+	if let Some(max_recipients) = quota.max_recipients_per_message
+		&& recipients > max_recipients
+	{
+		return Err(OutgoingError::QuotaExceeded(format!(
+			"recipient count {recipients} exceeds max {max_recipients}"
+		)));
+	}
+
+	let Some(org_id) = settings.org_id.as_deref() else {
+		return Ok(());
+	};
+	let now = std::time::SystemTime::now()
+		.duration_since(std::time::UNIX_EPOCH)
+		.unwrap_or_default()
+		.as_secs();
+
+	if let Some(hourly_limit) = quota.hourly_send_limit {
+		let since = now.saturating_sub(3600);
+		let sent = db::count_outbound_deliveries_since(org_id, since)
+			.await
+			.map_err(OutgoingError::Relay)?;
+		if sent >= hourly_limit as u64 {
+			return Err(OutgoingError::QuotaExceeded(format!(
+				"hourly send limit reached ({hourly_limit})"
+			)));
+		}
+	}
+	if let Some(daily_limit) = quota.daily_send_limit {
+		let since = now.saturating_sub(86_400);
+		let sent = db::count_outbound_deliveries_since(org_id, since)
+			.await
+			.map_err(OutgoingError::Relay)?;
+		if sent >= daily_limit as u64 {
+			return Err(OutgoingError::QuotaExceeded(format!(
+				"daily send limit reached ({daily_limit})"
+			)));
+		}
+	}
+	Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+	use super::effective_dnssec_validate;
+
+	#[test]
+	fn dnssec_override_prefers_tenant_setting() {
+		assert!(!effective_dnssec_validate(true, Some(false)));
+		assert!(effective_dnssec_validate(false, Some(true)));
+		assert!(effective_dnssec_validate(true, None));
+	}
 }
