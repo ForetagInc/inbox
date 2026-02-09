@@ -11,7 +11,7 @@ pub struct SubmissionServer<'a> {
 
 impl<'a> SubmissionServer<'a> {
 	pub async fn from_config(config: &'a Config) -> Self {
-		let addr = format!("{}:{}", config.server.bind_addr, 587);
+		let addr = format!("{}:{}", config.server.bind_addr, config.smtp.submission_port);
 		let listener = TcpListener::bind(&addr).await.unwrap();
 
 		info!("[SMTP - Submission] Server initialized on {}", addr);
@@ -52,7 +52,7 @@ impl<'a> SubmissionServer<'a> {
 
 		let mut session = SmtpSession::new(peer_ip);
 
-		let greeting = format!("220 {} Inbox SMTP server\r\n", config.server.bind_addr);
+		let greeting = format!("220 {} Inbox SMTP server\r\n", config.server.hostname);
 		writer.write_all(greeting.as_bytes()).await?;
 
 		session.state = crate::protocols::smtp::state::SessionState::Ready;
@@ -68,7 +68,15 @@ impl<'a> SubmissionServer<'a> {
 			let trimmed = line.trim_end_matches(['\r', '\n']);
 			match Command::parse(trimmed) {
 				Ok(command) => {
-					handler::handle_command(command, &mut session, config, &mut reader, &mut writer).await?;
+					handler::handle_command(
+						command,
+						&mut session,
+						handler::DeliveryMode::Submission,
+						config,
+						&mut reader,
+						&mut writer
+					)
+					.await?;
 					if session.state == SessionState::Finished {
 						break;
 					}

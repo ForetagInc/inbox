@@ -1,5 +1,6 @@
 pub mod attachment;
 pub mod incoming;
+pub mod outgoing;
 
 use tracing::info;
 use std::io::Result;
@@ -8,16 +9,26 @@ use mail_parser::MessageParser;
 
 use crate::config::Config;
 use crate::protocols::smtp::commands::Command;
-use crate::protocols::smtp::handler::incoming::verify_mail;
+use crate::protocols::smtp::handler::{
+	incoming::{accepted_for_recipients, persist_incoming_message, verify_mail},
+	outgoing::relay_transaction
+};
 use crate::protocols::smtp::state::{SessionState, SmtpSession};
 
 async fn reply<W: AsyncWrite + Unpin>(w: &mut W, code: u16, msg: &str) -> Result<()> {
 	w.write_all(format!("{code} {msg}\r\n").as_bytes()).await
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum DeliveryMode {
+	Transfer,
+	Submission,
+}
+
 pub async fn handle_command<R, W>(
 	command: Command,
 	session: &mut SmtpSession,
+	mode: DeliveryMode,
 	config: &Config,
 	reader: &mut R,
 	writer: &mut W,
@@ -56,7 +67,7 @@ where
 
 		Command::Data => {
 			let Some(txn) = session.transaction.as_ref() else {
-				reply(writer, 305, "5.5.1 Bad sequence of commands").await?;
+				reply(writer, 503, "5.5.1 Bad sequence of commands").await?;
 				return Ok(());
 			};
 
@@ -81,23 +92,65 @@ where
 				Some(message) => {
 					info!("DATA BYTES: {:?}", message);
 
-					let subject = message.subject().unwrap_or_default();
-
 					let mut txn = session.transaction.take().unwrap();
 					txn.data = Some(raw.clone());
 
-					let peer_ip = session.peer_ip.unwrap();
-					let helo_domain = session.helo_domain.as_ref().unwrap().as_str();
-					let mail_from = txn.mail_from.as_ref().unwrap().as_str();
-					let raw_message = message.raw_message();
+					match mode {
+						DeliveryMode::Transfer => {
+							let Some(peer_ip) = session.peer_ip else {
+								reply(writer, 451, "4.3.0 Missing peer address").await?;
+								return Ok(());
+							};
+							let helo_domain = session.helo_domain.as_deref().unwrap_or("unknown");
+							let mail_from = txn.mail_from.as_deref().unwrap_or("");
+							let raw_message = message.raw_message();
 
-					let verify_mail = verify_mail(peer_ip, helo_domain, &config.server.hostname, mail_from, raw_message).await;
+							let verdict = verify_mail(
+								peer_ip,
+								helo_domain,
+								&config.server.hostname,
+								mail_from,
+								raw_message,
+								config.auth.allow_header_override
+							)
+							.await;
 
-					info!("Verifying: {}, {}, {}, {}", peer_ip, helo_domain, mail_from, &config.server.hostname);
-					info!("Verify Email {:?}", verify_mail);
-
-					// 📨 TODO: Save to storage or queue
-					reply(writer, 250, "2.0.0 OK: queued").await?;
+								match verdict {
+									Ok(v) => {
+										if !accepted_for_recipients(config, &txn.rcpt_to, &v).await {
+											reply(writer, 550, "5.7.1 Message rejected by SPF/DKIM/DMARC policy")
+												.await?;
+									} else {
+										let message_id_hint = message.message_id().unwrap_or("message");
+										let path = persist_incoming_message(raw_message, message_id_hint).await;
+										match path {
+											Ok(path) => {
+												info!("Stored inbound message at {}", path.display());
+												reply(writer, 250, "2.0.0 OK: received").await?;
+											}
+											Err(err) => {
+												info!("Inbound storage error: {err}");
+												reply(writer, 451, "4.3.0 Temporary local storage failure").await?;
+											}
+										}
+									}
+								}
+								Err(err) => {
+									info!("Inbound auth verification error: {err}");
+									reply(writer, 451, "4.7.0 Authentication check temporary failure").await?;
+								}
+							}
+						}
+						DeliveryMode::Submission => match relay_transaction(&txn, config).await {
+							Ok(()) => {
+								reply(writer, 250, "2.0.0 OK: submitted").await?;
+							}
+								Err(err) => {
+									info!("Submission delivery error: {err}");
+									reply(writer, 554, "5.7.1 Message delivery failed").await?;
+								}
+							}
+						}
 				}
 				None => {
 					reply(writer, 550, "5.6.0 Message parse failure").await?;

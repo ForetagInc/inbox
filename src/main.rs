@@ -1,35 +1,25 @@
 extern crate dotenv;
 
 use dotenv::dotenv;
-
-use crate::{
-	config::{Config, ServerConfig},
+use inbox::{
+	db,
+	config::Config,
 	server::{http::HTTPServer, submission::SubmissionServer, transfer::TransferServer}
 };
-
-pub mod api;
-pub mod config;
-pub mod db;
-pub mod integrations;
-pub mod protocols;
-pub mod server;
+use tracing::warn;
 
 #[tokio::main]
 pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	dotenv().ok();
 	tracing_subscriber::fmt::init();
 
-	// db::init().await;
+	if let Err(err) = db::init().await {
+		warn!("Database initialization failed: {err}. Domain tenant overrides will be disabled.");
+	}
 
-	let config = Config {
-		server: ServerConfig {
-			hostname: "mail.wrkshp.so".to_string(),
-			bind_addr: "0.0.0.0".to_string(),
-			max_connections: 10,
-		},
-	};
+	let config = Config::from_env();
 
-    let http_server = HTTPServer::serve().await;
+	let http_server = HTTPServer::serve(config.clone()).await;
 
 	let transfer_server = TransferServer::from_config(&config).await.run();
 	let submission_server = SubmissionServer::from_config(&config).await.run();

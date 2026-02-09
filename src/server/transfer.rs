@@ -11,7 +11,7 @@ pub struct TransferServer<'a> {
 
 impl<'a> TransferServer<'a> {
 	pub async fn from_config(config: &'a Config) -> Self {
-		let addr = format!("{}:{}", config.server.bind_addr, 25);
+		let addr = format!("{}:{}", config.server.bind_addr, config.smtp.transfer_port);
 		let listener = TcpListener::bind(&addr).await.unwrap();
 
 		info!("[SMTP - Transfer] Server initialized on {}", addr);
@@ -68,7 +68,15 @@ impl<'a> TransferServer<'a> {
 			let trimmed = line.trim_end_matches(['\r', '\n']);
 			match Command::parse(trimmed) {
 				Ok(command) => {
-					handler::handle_command(command, &mut session, config, &mut reader, &mut writer).await?;
+					handler::handle_command(
+						command,
+						&mut session,
+						handler::DeliveryMode::Transfer,
+						config,
+						&mut reader,
+						&mut writer
+					)
+					.await?;
 					if session.state == SessionState::Finished {
 						break;
 					}

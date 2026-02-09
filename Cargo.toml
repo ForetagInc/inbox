@@ -8,6 +8,7 @@ edition = '2024'
 async-graphql = { version = '7.0.17', features = ['chrono', 'graphiql'] }
 async-graphql-axum = '7.0.17'
 axum = { version = '0.8.6' }
+base64 = '0.22.1'
 chrono = { version = '0.4.42' }
 clamav-client = { version = '2.2.0', features = ['tokio-stream'] }
 cloudflare-r2-rs = '0.6.8'
@@ -20,12 +21,14 @@ http-body-util = '0.1.3'
 mail-auth = { version = '0.7.2', features = ['rkyv'] }
 mail-builder = { version = '0.4.4' }
 mail-parser = { version = '0.11.1', features = ['full_encoding'] }
-mail-send = { version = '0.5.2', default-features = false, features = ['cram-md5', 'ring', 'tls12'] }
+mail-send = { version = '0.5.2', default-features = false, features = ['cram-md5', 'dkim', 'ring', 'tls12'] }
 psl = '2'
 rayon = '1.11.0'
+rustls = { version = '0.23.34', features = ['ring'] }
 serde = { version = '1', features = ['derive'] }
 smtp-proto = { version = '0.2.0', features = ['rkyv', 'serde'] }
 surrealdb = { version = '3.0.0-alpha.12', features = ['protocol-http'] }
+surrealdb-types = '3.0.0-alpha.12'
 thiserror = '2'
 tokio = { version = '1', features = ['full'] }
 tokio-stream = '0.1.17'
