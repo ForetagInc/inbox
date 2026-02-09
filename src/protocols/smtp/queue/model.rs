@@ -16,6 +16,7 @@ pub enum QueuePayload {
 		subject: String,
 		text_body: Option<String>,
 		html_body: Option<String>,
+		idempotency_key: Option<String>,
 	},
 	RelayTransaction {
 		mail_from: String,
@@ -27,6 +28,9 @@ pub enum QueuePayload {
 #[derive(Debug, Clone)]
 pub struct QueueJob {
 	pub id: String,
+	pub org_id: Option<String>,
+	pub actor_account: Option<String>,
+	pub shared_inbox: Option<String>,
 	pub created_at_epoch_secs: u64,
 	pub expires_at_epoch_secs: u64,
 	pub attempts: u32,
@@ -41,6 +45,9 @@ pub fn to_queue_job(row: OutboundQueueRow) -> Result<QueueJob, String> {
 		.map_err(|e| format!("queue payload parse failed for {}: {e}", row.job_id))?;
 	Ok(QueueJob {
 		id: row.job_id,
+		org_id: row.org_id,
+		actor_account: row.actor_account,
+		shared_inbox: row.shared_inbox,
 		created_at_epoch_secs: row.created_at_epoch_secs,
 		expires_at_epoch_secs: row.expires_at_epoch_secs,
 		attempts: row.attempts,

@@ -31,4 +31,10 @@ pub enum OutgoingError {
 
 	#[error("SMTP delivery failed: {0}")]
 	Relay(String),
+
+	#[error("all recipients suppressed by policy")]
+	Suppressed,
+
+	#[error("quota exceeded: {0}")]
+	QuotaExceeded(String),
 }

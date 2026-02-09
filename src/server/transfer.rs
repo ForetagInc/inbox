@@ -1,8 +1,8 @@
 use std::{io::Error, net::{IpAddr, Ipv4Addr}};
 use tokio::{io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader}, net::{TcpListener, TcpStream}};
-use tracing::{error, info};
+use tracing::{Level, error, event};
 
-use crate::{config::Config, protocols::smtp::{commands::Command, handler, state::{SessionState, SmtpSession}}};
+use crate::{config::Config, protocols::smtp::{commands::Command, handler, rate_limit, state::{SessionState, SmtpSession}}};
 
 pub struct TransferServer<'a> {
 	listener: TcpListener,
@@ -14,8 +14,6 @@ impl<'a> TransferServer<'a> {
 		let addr = format!("{}:{}", config.server.bind_addr, config.smtp.transfer_port);
 		let listener = TcpListener::bind(&addr).await.unwrap();
 
-		info!("[SMTP - Transfer] Server initialized on {}", addr);
-
 		Self {
 			listener,
 			config
@@ -23,8 +21,6 @@ impl<'a> TransferServer<'a> {
 	}
 
 	pub async fn run(self) -> io::Result<()> {
-		tracing::info!("[SMTP - Transfer] Server listening for requests");
-
 		loop {
 			let (socket, addr) = match self.listener.accept().await {
 				Ok(v) => v,
@@ -46,6 +42,18 @@ impl<'a> TransferServer<'a> {
 
 	async fn handle_connection(mut socket: TcpStream, config: &Config) -> Result<(), Error> {
 		let peer_ip = socket.peer_addr().ok().map(|addr| addr.ip()).unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+		if !rate_limit::allow_connection(peer_ip, handler::DeliveryMode::Transfer, config).await {
+			event!(
+				target: "smtp.ingress",
+				Level::WARN,
+				action = "reject",
+				reason = "rate_limit_connection",
+				mode = "transfer",
+				peer_ip = %peer_ip
+			);
+			let _ = socket.write_all(b"421 4.7.1 Rate limit exceeded\r\n").await;
+			return Ok(());
+		}
 		let (reader, mut writer) = socket.split();
 		let mut reader = BufReader::new(reader);
 		let mut line = String::new();
