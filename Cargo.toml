@@ -7,9 +7,14 @@ edition = '2024'
 [dependencies]
 async-graphql = { version = '7.0.17', features = ['chrono', 'graphiql'] }
 async-graphql-axum = '7.0.17'
+aws-config = '=1.8.10'
+aws-credential-types = '=1.2.8'
+aws-sdk-s3 = '=1.110.0'
 axum = { version = '0.8.6' }
+base64 = '0.22.1'
 chrono = { version = '0.4.42' }
 clamav-client = { version = '2.2.0', features = ['tokio-stream'] }
+cloudflare-r2-rs = '0.6.8'
 dav-server = '0.8.0'
 dotenv = '0.15.0'
 email_address = '0.2.9'
@@ -19,13 +24,25 @@ http-body-util = '0.1.3'
 mail-auth = { version = '0.7.2', features = ['rkyv'] }
 mail-builder = { version = '0.4.4' }
 mail-parser = { version = '0.11.1', features = ['full_encoding'] }
-mail-send = { version = '0.5.2', default-features = false, features = ['cram-md5', 'ring', 'tls12'] }
+mail-send = { version = '0.5.2', default-features = false, features = ['cram-md5', 'dkim', 'ring', 'tls12'] }
+md-5 = '0.10.6'
+psl = '2'
 rayon = '1.11.0'
+reqwest = { version = '0.12.24', default-features = false, features = ['rustls-tls'] }
+rustls = { version = '0.23.34', features = ['ring'] }
+opentelemetry = { version = '0.31.0', features = ['trace'] }
+opentelemetry_sdk = { version = '0.31.0', features = ['rt-tokio'] }
+opentelemetry-otlp = { version = '0.31.0', features = ['trace', 'http-proto', 'reqwest-client'] }
 serde = { version = '1', features = ['derive'] }
+serde_json = '1'
+sha2 = '0.10.9'
 smtp-proto = { version = '0.2.0', features = ['rkyv', 'serde'] }
-surrealdb = { version = '3.0.0-alpha.11', features = ['protocol-http'] }
+surrealdb = { version = '3.0.0-alpha.12', features = ['protocol-http'] }
+surrealdb-types = '3.0.0-alpha.12'
+thiserror = '2'
 tokio = { version = '1', features = ['full'] }
 tokio-stream = '0.1.17'
+tokio-util = '0.7.16'
 tower = { version = '0.5.2' }
 tracing = { version = '0.1.41' }
 tracing-subscriber = { version = '0.3.20' }

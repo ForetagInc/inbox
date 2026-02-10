@@ -1,8 +1,8 @@
-use std::io::Error;
+use std::{io::Error, net::{IpAddr, Ipv4Addr}};
 use tokio::{io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader}, net::{TcpListener, TcpStream}};
-use tracing::{error, info};
+use tracing::{Level, error, event};
 
-use crate::{config::Config, protocols::smtp::{commands::Command, handler, state::{SessionState, SmtpSession}}};
+use crate::{config::Config, protocols::smtp::{commands::Command, handler, rate_limit, state::{SessionState, SmtpSession}}};
 
 pub struct SubmissionServer<'a> {
 	listener: TcpListener,
@@ -11,10 +11,8 @@ pub struct SubmissionServer<'a> {
 
 impl<'a> SubmissionServer<'a> {
 	pub async fn from_config(config: &'a Config) -> Self {
-		let addr = format!("{}:{}", config.server.bind_addr, 587);
+		let addr = format!("{}:{}", config.server.bind_addr, config.smtp.submission_port);
 		let listener = TcpListener::bind(&addr).await.unwrap();
-
-		info!("[SMTP - Submission] Server initialized on {}", addr);
 
 		Self {
 			listener,
@@ -23,8 +21,6 @@ impl<'a> SubmissionServer<'a> {
 	}
 
 	pub async fn run(self) -> io::Result<()> {
-		tracing::info!("[SMTP - Submission] Server listening for requests");
-
 		loop {
 			match self.listener.accept().await {
 				Ok((socket, addr)) => {
@@ -45,13 +41,26 @@ impl<'a> SubmissionServer<'a> {
 	}
 
 	async fn handle_connection(mut socket: TcpStream, config: &Config) -> Result<(), Error> {
+		let peer_ip = socket.peer_addr().ok().map(|addr| addr.ip()).unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+		if !rate_limit::allow_connection(peer_ip, handler::DeliveryMode::Submission, config).await {
+			event!(
+				target: "smtp.egress",
+				Level::WARN,
+				action = "reject",
+				reason = "rate_limit_connection",
+				mode = "submission",
+				peer_ip = %peer_ip
+			);
+			let _ = socket.write_all(b"421 4.7.1 Rate limit exceeded\r\n").await;
+			return Ok(());
+		}
 		let (reader, mut writer) = socket.split();
 		let mut reader = BufReader::new(reader);
 		let mut line = String::new();
 
-		let mut session = SmtpSession::new();
+		let mut session = SmtpSession::new(peer_ip);
 
-		let greeting = format!("220 {} Inbox SMTP server\r\n", config.server.bind_addr);
+		let greeting = format!("220 {} Inbox SMTP server\r\n", config.server.hostname);
 		writer.write_all(greeting.as_bytes()).await?;
 
 		session.state = crate::protocols::smtp::state::SessionState::Ready;
@@ -67,7 +76,15 @@ impl<'a> SubmissionServer<'a> {
 			let trimmed = line.trim_end_matches(['\r', '\n']);
 			match Command::parse(trimmed) {
 				Ok(command) => {
-					handler::handle_command(command, &mut session, &mut reader, &mut writer).await?;
+					handler::handle_command(
+						command,
+						&mut session,
+						handler::DeliveryMode::Submission,
+						config,
+						&mut reader,
+						&mut writer
+					)
+					.await?;
 					if session.state == SessionState::Finished {
 						break;
 					}
