@@ -9,7 +9,7 @@ use std::{
 use inbox::{
 	config::{
 		Config, DkimConfig, MailAuthConfig, OutboundConfig, OutboundQueueConfig, OutboundTlsMode,
-		ServerConfig, SmtpConfig,
+		OutboundDaneMode, ServerConfig, SmtpConfig,
 	},
 	protocols::smtp::{
 		commands::Command,
@@ -226,6 +226,9 @@ async fn outbound_submission_sends_and_signs_dkim() {
 		subject: "Outbound Integration".into(),
 		text_body: Some("Hello recipient".into()),
 		html_body: None,
+		idempotency_key: None,
+		actor_account: None,
+		shared_inbox: None,
 	};
 
 	inbox::protocols::smtp::handler::outgoing::send_outgoing(request, &config)
@@ -239,20 +242,32 @@ async fn outbound_submission_sends_and_signs_dkim() {
 }
 
 fn test_config(outbound_port: u16, submission_port: u16) -> Config {
-	Config {
-		server: ServerConfig {
+		Config {
+			server: ServerConfig {
 			hostname: "mail.sender.test".to_string(),
 			bind_addr: "127.0.0.1".to_string(),
 			max_connections: 32,
 		},
-		smtp: SmtpConfig {
-			transfer_port: 2525,
-			submission_port,
-			inbound_max_rcpt_to: 100,
-			inbound_max_message_bytes: 10 * 1024 * 1024,
-			outbound_queue: OutboundQueueConfig {
+			smtp: SmtpConfig {
+				transfer_port: 2525,
+				submission_port,
+				inbound_max_rcpt_to: 100,
+				max_message_bytes: 10 * 1024 * 1024,
+				rate_limit: inbox::config::SmtpRateLimitConfig {
+					enabled: false,
+					window_secs: 60,
+					transfer_connections_per_window: 1000,
+					submission_connections_per_window: 1000,
+					transfer_messages_per_window: 1000,
+					submission_messages_per_window: 1000,
+					fail_open_on_db_error: true,
+				},
+				outbound_queue: OutboundQueueConfig {
 				enabled: false,
 				poll_interval_secs: 1,
+				cleanup_interval_secs: 60,
+				dead_job_retention_secs: 3600,
+				delivery_retention_secs: 3600,
 				batch_size: 10,
 				lease_secs: 30,
 				retry_base_delay_secs: 1,
@@ -260,15 +275,17 @@ fn test_config(outbound_port: u16, submission_port: u16) -> Config {
 				max_attempts: 2,
 				ttl_secs: 60,
 			},
-			outbound: OutboundConfig {
-				default_port: outbound_port,
-				require_starttls: false,
-				allow_invalid_certs: true,
-				allow_plaintext_fallback: true,
-				tls_mode: OutboundTlsMode::Opportunistic,
-				mta_sts_enforce: false,
-				tls_report_dir: "data/tlsrpt-test".to_string(),
-				timeout: std::time::Duration::from_secs(5),
+				outbound: OutboundConfig {
+					default_port: outbound_port,
+					require_starttls: false,
+					allow_invalid_certs: true,
+					allow_plaintext_fallback: true,
+					tls_mode: OutboundTlsMode::Opportunistic,
+					dane_mode: OutboundDaneMode::Off,
+					dnssec_validate: true,
+					mta_sts_enforce: false,
+					tls_report_dir: "data/tlsrpt-test".to_string(),
+					timeout: std::time::Duration::from_secs(5),
 				dkim: Some(DkimConfig {
 					domain: "sender.test".into(),
 					selector: "mail".into(),
@@ -277,14 +294,21 @@ fn test_config(outbound_port: u16, submission_port: u16) -> Config {
 				}),
 			},
 		},
-		auth: MailAuthConfig {
-			require_spf_pass: true,
-			require_dkim_pass: true,
-			require_dmarc_pass: true,
-			allow_header_override: true,
-		},
+			auth: MailAuthConfig {
+				require_spf_pass: true,
+				require_dkim_pass: true,
+				require_dmarc_pass: true,
+				allow_header_override: true,
+			},
+			telemetry: inbox::config::TelemetryConfig {
+				enabled: false,
+				otlp_endpoint: "http://localhost:4318/v1/traces".to_string(),
+				service_name: "inbox-test".to_string(),
+				sample_ratio: 1.0,
+				console_logs: false,
+			},
+		}
 	}
-}
 
 async fn empty_reader() -> impl AsyncBufRead + Unpin {
 	reader_from(b"").await

@@ -28,9 +28,14 @@ mail-send = { version = '0.5.2', default-features = false, features = ['cram-md5
 md-5 = '0.10.6'
 psl = '2'
 rayon = '1.11.0'
+reqwest = { version = '0.12.24', default-features = false, features = ['rustls-tls'] }
 rustls = { version = '0.23.34', features = ['ring'] }
+opentelemetry = { version = '0.31.0', features = ['trace'] }
+opentelemetry_sdk = { version = '0.31.0', features = ['rt-tokio'] }
+opentelemetry-otlp = { version = '0.31.0', features = ['trace', 'http-proto', 'reqwest-client'] }
 serde = { version = '1', features = ['derive'] }
 serde_json = '1'
+sha2 = '0.10.9'
 smtp-proto = { version = '0.2.0', features = ['rkyv', 'serde'] }
 surrealdb = { version = '3.0.0-alpha.12', features = ['protocol-http'] }
 surrealdb-types = '3.0.0-alpha.12'

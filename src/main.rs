@@ -6,19 +6,20 @@ use inbox::{
 	db,
 	protocols::smtp::queue,
 	server::{http::HTTPServer, submission::SubmissionServer, transfer::TransferServer},
+	telemetry,
 };
 use tracing::warn;
 
 #[tokio::main]
 pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	dotenv().ok();
-	tracing_subscriber::fmt::init();
+	let config = Config::from_env();
+	let _telemetry_guard = telemetry::init(&config).map_err(std::io::Error::other)?;
 
 	if let Err(err) = db::init().await {
 		warn!("Database initialization failed: {err}. Domain tenant overrides will be disabled.");
 	}
 
-	let config = Config::from_env();
 	if config.smtp.outbound_queue.enabled && db::is_ready() {
 		tokio::spawn(queue::run_worker(config.clone()));
 	} else if config.smtp.outbound_queue.enabled {
